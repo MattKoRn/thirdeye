@@ -64,14 +64,17 @@ bool replaceFile(const std::filesystem::path &temp,
 
 bool OnlinePolicy::save(const std::filesystem::path &path, std::string &error) const {
     error.clear();
-    if (path.empty() || !std::isfinite(meanLoss_)) {
+    if (path.empty() || !std::isfinite(meanLoss_) ||
+        !std::isfinite(meanReward_) || std::abs(meanReward_) > 2.0 ||
+        successes_ > samples_ || failures_ > samples_ - successes_) {
         error = "invalid checkpoint path or metrics";
         return false;
     }
     std::ostringstream data;
     data.imbue(std::locale::classic());
-    data << std::setprecision(17) << "THIRDEYE_NN 1\n"
-         << samples_ << ' ' << meanLoss_ << '\n';
+    data << std::setprecision(17) << "THIRDEYE_NN 2\n"
+         << samples_ << ' ' << meanLoss_ << ' ' << successes_ << ' '
+         << failures_ << ' ' << meanReward_ << '\n';
     for (double weight : weights_) {
         if (!std::isfinite(weight) || std::abs(weight) > 100.0) {
             error = "invalid model weights";
@@ -149,11 +152,22 @@ bool OnlinePolicy::load(const std::filesystem::path &path, std::string &error) {
     int version = 0;
     uint64_t samples = 0;
     double meanLoss = 0.0;
+    double meanReward = 0.0;
+    uint64_t successes = 0;
+    uint64_t failures = 0;
     Weights incoming{};
-    if (!(input >> magic >> version) || magic != "THIRDEYE_NN" || version != 1 ||
+    if (!(input >> magic >> version) || magic != "THIRDEYE_NN" ||
+        (version != 1 && version != 2) ||
         !(input >> samples >> meanLoss) || !std::isfinite(meanLoss) ||
         meanLoss < 0.0 || meanLoss > 10000.0) {
         error = "incompatible checkpoint header or metrics";
+        return false;
+    }
+    if (version == 2 &&
+        (!(input >> successes >> failures >> meanReward) ||
+         successes > samples || failures > samples - successes ||
+         !std::isfinite(meanReward) || std::abs(meanReward) > 2.0)) {
+        error = "invalid autonomous learning metrics";
         return false;
     }
     for (double &w : incoming) {
@@ -172,6 +186,9 @@ bool OnlinePolicy::load(const std::filesystem::path &path, std::string &error) {
     weights_ = incoming;
     samples_ = samples;
     meanLoss_ = meanLoss;
+    meanReward_ = meanReward;
+    successes_ = successes;
+    failures_ = failures;
     return true;
 }
 

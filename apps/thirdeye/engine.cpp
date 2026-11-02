@@ -463,7 +463,6 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 				if (!uiScreen && THIRDEYE::nn::mode::consumesManualKey(key))
 					break; // F1 mode owns movement, other UI keys still work
 				events.postEvent(0, VM::SYS_KEYDOWN, key);
-				THIRDEYE::control::observeKey(key, objects);
 				if (gRecorder.enabled) {
 					char tok[16];
 					std::snprintf(tok, sizeof(tok), "%x", key);

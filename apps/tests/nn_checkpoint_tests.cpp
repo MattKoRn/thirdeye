@@ -141,3 +141,87 @@ TEST(nnCheckpoint, InvalidFeaturesAndKeysCannotCorruptWeights) {
     EXPECT_EQ(OnlinePolicy::keyForAction(5), 0x4900);
     EXPECT_EQ(OnlinePolicy::keyForAction(6), -1);
 }
+
+
+TEST(nnCheckpoint, AutonomousRewardUpdatesWithoutPlayerDemonstrations) {
+    OnlinePolicy brain;
+    const std::array<bool, OnlinePolicy::kActions> allowed{true,true,true,true,true,true};
+    EXPECT_EQ(brain.select(kContext, {false,false,false,false,true,false}, 0.1, 0.9), 4);
+    EXPECT_EQ(brain.select(kContext, {false,false,false,false,false,false}, 0.1, 0.2), -1);
+    EXPECT_EQ(brain.select(kContext, allowed, -0.5, 0.5), -1);
+
+    for (int i = 0; i < 120; ++i)
+        ASSERT_TRUE(brain.reinforce(kContext, 0, 1.8, true));
+    EXPECT_EQ(brain.predict(kContext).action, 0);
+    const auto before = brain.weights();
+    for (int i = 0; i < 120; ++i)
+        ASSERT_TRUE(brain.reinforce(kContext, 0, -1.25, false));
+    EXPECT_NE(brain.weights(), before);
+    EXPECT_EQ(brain.successes(), 120u);
+    EXPECT_EQ(brain.failures(), 120u);
+    EXPECT_DOUBLE_EQ(brain.successRate(), 0.5);
+    EXPECT_EQ(brain.samples(), 240u);
+}
+
+TEST(nnCheckpoint, SelfLearnedProgressRoundTripsWithWeights) {
+    TempCheckpoint tmp;
+    OnlinePolicy brain;
+    for (int i = 0; i < 30; ++i)
+        ASSERT_TRUE(brain.reinforce(kContext, 1, i % 3 ? 1.8 : -1.25,
+                                    i % 3 != 0));
+    std::string error;
+    ASSERT_TRUE(brain.save(tmp.path, error)) << error;
+    OnlinePolicy restored;
+    ASSERT_TRUE(restored.load(tmp.path, error)) << error;
+    EXPECT_EQ(restored.weights(), brain.weights());
+    EXPECT_EQ(restored.samples(), brain.samples());
+    EXPECT_EQ(restored.successes(), brain.successes());
+    EXPECT_EQ(restored.failures(), brain.failures());
+    EXPECT_DOUBLE_EQ(restored.meanReward(), brain.meanReward());
+    EXPECT_DOUBLE_EQ(restored.successRate(), brain.successRate());
+}
+
+TEST(nnCheckpoint, RejectsForgedAutonomousMetricsWithoutChangingBrain) {
+    TempCheckpoint tmp;
+    OnlinePolicy brain;
+    ASSERT_TRUE(brain.reinforce(kContext, 2, 1.8, true));
+    std::string error;
+    ASSERT_TRUE(brain.save(tmp.path, error)) << error;
+    const auto original = brain.weights();
+    const auto raw = readAll(tmp.path);
+    const auto headerEnd = raw.find('\n');
+    const auto metricsEnd = raw.find('\n', headerEnd + 1);
+    const auto originalPayload = raw.substr(0, raw.rfind("checksum "));
+    std::string payload = originalPayload;
+    payload.replace(headerEnd + 1, metricsEnd - headerEnd - 1,
+                    "1 1 999 0 0");
+    writeAll(tmp.path, withChecksum(payload));
+    EXPECT_FALSE(brain.load(tmp.path, error));
+    EXPECT_EQ(brain.weights(), original);
+    EXPECT_EQ(brain.samples(), 1u);
+    EXPECT_EQ(brain.successes(), 1u);
+}
+
+TEST(nnCheckpoint, LoadsLegacyV1BrainAndUpgradesOnNextSave) {
+    TempCheckpoint tmp;
+    OnlinePolicy previous;
+    previous.learn(kContext, 3);
+    std::string error;
+    ASSERT_TRUE(previous.save(tmp.path, error)) << error;
+    std::string saved = readAll(tmp.path);
+    auto data = saved.substr(0, saved.rfind("checksum "));
+    const auto nl = data.find('\n');
+    const auto metricsEnd = data.find('\n', nl + 1);
+    data.replace(0, nl, "THIRDEYE_NN 1");
+    std::string metrics = data.substr(nl + 1, metricsEnd - nl - 1);
+    const auto firstSpace = metrics.find(' ');
+    metrics = metrics.substr(0, metrics.find(' ', firstSpace + 1));
+    data.replace(nl + 1, metricsEnd - nl - 1, metrics);
+    writeAll(tmp.path, withChecksum(data));
+    OnlinePolicy restored;
+    ASSERT_TRUE(restored.load(tmp.path, error)) << error;
+    EXPECT_EQ(restored.weights(), previous.weights());
+    EXPECT_EQ(restored.samples(), previous.samples());
+    EXPECT_EQ(restored.successes(), 0u);
+    EXPECT_EQ(restored.failures(), 0u);
+}

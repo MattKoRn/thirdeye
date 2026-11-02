@@ -30,6 +30,13 @@ public:
     static int keyForAction(int action);
 
     Prediction predict(const Features &features) const;
+    // Choose only permitted actions. 0..1 exploration rolls make decisions
+    // reproducible in tests; the live host supplies its own random samples.
+    int select(const Features &features, const std::array<bool, kActions> &allowed,
+               double exploreRoll, double choiceRoll) const;
+    // Learn from the observed result of OUR action (not the player's keys).
+    // Reward is clipped to [-2,2]; success counts actual movement/turns.
+    bool reinforce(const Features &features, int action, double reward, bool success);
     // Returns negative on invalid input; otherwise cross-entropy loss.
     double learn(const Features &features, int action);
 
@@ -39,6 +46,13 @@ public:
 
     uint64_t samples() const { return samples_; }
     double meanLoss() const { return meanLoss_; }
+    double meanReward() const { return meanReward_; }
+    uint64_t successes() const { return successes_; }
+    uint64_t failures() const { return failures_; }
+    double successRate() const {
+        const auto total = successes_ + failures_;
+        return total ? static_cast<double>(successes_) / static_cast<double>(total) : 0.0;
+    }
     const Weights &weights() const { return weights_; }
 
 private:
@@ -48,6 +62,9 @@ private:
     Weights weights_{};
     uint64_t samples_ = 0;
     double meanLoss_ = 0.0;
+    double meanReward_ = 0.0;
+    uint64_t successes_ = 0;
+    uint64_t failures_ = 0;
 };
 
 } // namespace THIRDEYE::nn

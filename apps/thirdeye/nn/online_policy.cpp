@@ -63,6 +63,67 @@ OnlinePolicy::Prediction OnlinePolicy::predict(const Features &features) const {
     return {static_cast<int>(it - p.begin()), *it};
 }
 
+
+int OnlinePolicy::select(const Features &features,
+                         const std::array<bool, kActions> &allowed,
+                         double exploreRoll, double choiceRoll) const {
+    if (!validFeatures(features) || !std::isfinite(exploreRoll) ||
+        !std::isfinite(choiceRoll) || exploreRoll < 0.0 || exploreRoll > 1.0 ||
+        choiceRoll < 0.0 || choiceRoll > 1.0) return -1;
+    int count = 0;
+    for (bool flag : allowed) if (flag) ++count;
+    if (count == 0) return -1;
+    // Exploration decreases gradually as the agent gathers its OWN outcomes,
+    // but always retains a chance to discover a better route.
+    const double epsilon = 0.08 + 0.47 /
+        (1.0 + static_cast<double>(samples_) / 180.0);
+    if (exploreRoll < epsilon) {
+        int choice = std::min(count - 1, static_cast<int>(choiceRoll * count));
+        for (std::size_t a = 0; a < kActions; ++a)
+            if (allowed[a] && choice-- == 0) return static_cast<int>(a);
+    }
+    const auto probabilitiesNow = probabilities(features, weights_);
+    int best = -1;
+    double highest = -1.0;
+    for (std::size_t a = 0; a < kActions; ++a) {
+        if (allowed[a] && probabilitiesNow[a] > highest) {
+            highest = probabilitiesNow[a];
+            best = static_cast<int>(a);
+        }
+    }
+    return best;
+}
+
+bool OnlinePolicy::reinforce(const Features &features, int action,
+                             double reward, bool success) {
+    if (!validFeatures(features) || action < 0 ||
+        action >= static_cast<int>(kActions) || !std::isfinite(reward) ||
+        samples_ == std::numeric_limits<uint64_t>::max() ||
+        (success ? successes_ : failures_) == std::numeric_limits<uint64_t>::max())
+        return false;
+    const auto p = probabilities(features, weights_);
+    const double bounded = std::clamp(reward, -2.0, 2.0);
+    constexpr double rate = 0.10;
+    for (std::size_t a = 0; a < kActions; ++a) {
+        const double gradient =
+            (a == static_cast<std::size_t>(action) ? 1.0 : 0.0) - p[a];
+        for (std::size_t i = 0; i < kFeatures; ++i) {
+            double &w = weights_[a * kFeatures + i];
+            w = std::clamp(w + rate * bounded * gradient * features[i],
+                           -100.0, 100.0);
+        }
+    }
+    ++samples_;
+    if (success) ++successes_;
+    else ++failures_;
+    // Mean action surprise is nonnegative and remains compatible with v1
+    // checkpoint's stored "meanLoss" field.
+    const double surprise = -std::log(std::max(p[static_cast<std::size_t>(action)], 1e-300));
+    meanLoss_ = samples_ == 1 ? surprise : 0.95 * meanLoss_ + 0.05 * surprise;
+    meanReward_ = samples_ == 1 ? bounded : 0.95 * meanReward_ + 0.05 * bounded;
+    return true;
+}
+
 double OnlinePolicy::learn(const Features &features, int action) {
     if (action < 0 || action >= static_cast<int>(kActions) ||
         !validFeatures(features) || samples_ == std::numeric_limits<uint64_t>::max())

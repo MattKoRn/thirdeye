@@ -39,9 +39,6 @@ void init(const std::string &path) {
 		std::cerr << "[ctl] control channel not supported on Windows\n";
 }
 void pump(GRAPHICS::Graphics *, VM::EventSystem &, VM::ObjectSystem &) {}
-void observeKey(int32_t code, VM::ObjectSystem &objects) {
-    nn::mode::observeKey(code, objects);
-}
 void shutdown() {}
 } // namespace THIRDEYE::control
 
@@ -170,25 +167,17 @@ std::string handle(const std::vector<std::string> &tok,
         const std::string &sub = tok[1];
         if (sub == "status" && tok.size() == 2)
             return "nn samples=" + std::to_string(nn::mode::samples()) +
-                   " loss=" + std::to_string(nn::mode::meanLoss()) +
-                   " train=" + (nn::mode::training() ? "on" : "off") +
+                   " reward=" + std::to_string(nn::mode::meanReward()) +
+                   " success=" + std::to_string(nn::mode::successRate()) +
+                   " self_train=" + (nn::mode::training() ? "on" : "off") +
                    " auto=" + (nn::mode::active() ? "on" : "off") + "\nok\n";
         if (sub == "train" && tok.size() == 3 &&
             (tok[2] == "on" || tok[2] == "off")) {
             nn::mode::setTraining(tok[2] == "on");
             return "ok\n";
         }
-        if (sub == "teach" && tok.size() == 3) {
-            long code = 0;
-            if (!parseHex(tok[2], code) || code < 0 ||
-                (code != 0x4800 && code != 0x5000 && code != 0x4b00 &&
-                 code != 0x4d00 && code != 0x4700 && code != 0x4900))
-                return "err teach <4800|5000|4b00|4d00|4700|4900>\n";
-            const double loss = nn::mode::teach(static_cast<int32_t>(code), objects);
-            if (loss < 0.0) return "err no valid dungeon pose\n";
-            return "nn learned samples=" + std::to_string(nn::mode::samples()) +
-                   " loss=" + std::to_string(loss) + "\nok\n";
-        }
+        if (sub == "teach")
+            return "err neural mode learns from its own action outcomes, not player demonstrations\n";
         if ((sub == "predict" || sub == "step") && tok.size() == 2) {
             int code = -1;
             double confidence = 0.0;
@@ -227,7 +216,6 @@ std::string handle(const std::vector<std::string> &tok,
         long code = 0;
         if (tok.size() != 2 || !parseHex(tok[1], code))
             return "err key <hex>\n";
-        observeKey(static_cast<int32_t>(code), objects);
         events.postEvent(0, VM::SYS_KEYDOWN, static_cast<int32_t>(code));
         return "ok\n";
     }
@@ -469,9 +457,6 @@ std::string handle(const std::vector<std::string> &tok,
 
 } // namespace
 
-void observeKey(int32_t code, VM::ObjectSystem &objects) {
-    nn::mode::observeKey(code, objects);
-}
 
 void init(const std::string &path) {
     if (path.empty()) return;

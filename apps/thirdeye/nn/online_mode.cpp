@@ -10,6 +10,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
+#include <random>
+#include <unordered_set>
 #include <string>
 #include <system_error>
 
@@ -26,12 +29,22 @@ struct State {
     std::filesystem::path file;
     bool initialized = false;
     bool storageReady = false;
-    bool trainingEnabled = true;
+    bool trainingEnabled = true; // autonomous outcome training only
     bool autonomous = false;
     bool dirty = false;
     bool storageWarningLogged = false;
     int ticks = 0;
     uint64_t savedSamples = 0;
+    struct Pending {
+        OnlinePolicy::Features features{};
+        Pose before{};
+        int action = -1;
+    };
+    std::optional<Pending> pending;
+    std::optional<Pose> failurePose;
+    std::array<bool, OnlinePolicy::kActions> failedActions{};
+    std::unordered_set<uint32_t> visited;
+    std::mt19937 rng{std::random_device{}()};
 };
 State g;
 
@@ -84,7 +97,7 @@ int readField(VM::ObjectSystem &objects, int obj, uint16_t cls,
 }
 
 bool context(VM::ObjectSystem &objects, OnlinePolicy::Features &features,
-             std::array<bool, 4> &blocked) {
+             std::array<bool, 4> &blocked, Pose *pose = nullptr) {
     const int kernel = objects.firstObjectOfClass(kKernelClass);
     const int dungeon = objects.firstObjectOfClass(kDungeonClass);
     if (kernel < 0 || dungeon < 0) return false;
@@ -105,7 +118,13 @@ bool context(VM::ObjectSystem &objects, OnlinePolicy::Features &features,
                       static_cast<uint32_t>(ny * 32 + nx), 0) != 0xff;
     }
     features = OnlinePolicy::features(x, y, dir, blocked);
+    if (pose) *pose = {x, y, dir, readField(objects, kernel, kKernelClass, 246)};
     return true;
+}
+
+uint32_t locationKey(const Pose &p) {
+    return (static_cast<uint32_t>(p.level) << 10) |
+           (static_cast<uint32_t>(p.y) << 5) | static_cast<uint32_t>(p.x);
 }
 
 bool canMove(int action, const std::array<bool, 4> &blocked) {
@@ -156,6 +175,7 @@ void shutdown() {
     if (!g.initialized) return;
     autoSave(true);
     g.autonomous = false;
+    g.pending.reset();
 }
 
 std::filesystem::path checkpointPath() {
@@ -169,6 +189,9 @@ void setActive(bool enabled) {
     initialize();
     g.autonomous = enabled;
     g.ticks = 0;
+    g.pending.reset();
+    g.failurePose.reset();
+    g.failedActions.fill(false);
 }
 
 bool toggle() {
@@ -185,24 +208,8 @@ bool training() { return g.trainingEnabled; }
 uint64_t samples() { initialize(); return g.brain.samples(); }
 double meanLoss() { initialize(); return g.brain.meanLoss(); }
 
-double teach(int32_t code, VM::ObjectSystem &objects) {
-    initialize();
-    const int action = OnlinePolicy::actionForKey(code);
-    OnlinePolicy::Features features{};
-    std::array<bool, 4> blocked{};
-    if (action < 0 || !context(objects, features, blocked)) return -1.0;
-    const double loss = g.brain.learn(features, action);
-    if (loss >= 0.0) {
-        g.dirty = true;
-        autoSave(false);
-    }
-    return loss;
-}
-
-void observeKey(int32_t code, VM::ObjectSystem &objects) {
-    if (g.trainingEnabled && !consumesManualKey(code))
-        (void)teach(code, objects);
-}
+double meanReward() { initialize(); return g.brain.meanReward(); }
+double successRate() { initialize(); return g.brain.successRate(); }
 
 bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
     initialize();
@@ -217,23 +224,77 @@ bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
 }
 
 void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive) {
-    if (!g.autonomous || ++g.ticks < kActionIntervalPumps) return;
+    // Never interpret changes caused by menus or manual control as rewards.
+    if (!g.autonomous || uiActive) {
+        g.pending.reset();
+        return;
+    }
+    if (++g.ticks < kActionIntervalPumps) return;
     g.ticks = 0;
-    // Never drive a menu, spellbook, camp panel, or any other UI screen.
-    if (uiActive) return;
 
     OnlinePolicy::Features features{};
     std::array<bool, 4> blocked{};
-    if (!context(objects, features, blocked)) return;
-
-    int key = -1;
-    double confidence = 0.0;
-    if (!predict(objects, key, confidence)) {
-        // A fresh brain still takes over when F1 is pressed. Conservative
-        // exploration avoids stepping into a known wall until it is trained.
-        key = fallbackKey(blocked);
+    Pose current;
+    if (!context(objects, features, blocked, &current) || current.level < 0) {
+        g.pending.reset();
+        return;
     }
-    events.postEvent(0, VM::SYS_KEYDOWN, key);
+    const bool firstVisit = g.visited.insert(locationKey(current)).second;
+
+    // Only reward or penalize a move AFTER the SOP engine has processed it.
+    if (g.pending) {
+        const auto previous = *g.pending;
+        g.pending.reset();
+        const bool sameLevel = previous.before.level == current.level;
+        const int travel = std::abs(previous.before.x - current.x) +
+                           std::abs(previous.before.y - current.y);
+        // Disregard teleports and scripted state resets (not our action).
+        if (sameLevel && travel <= 1) {
+            const Outcome result = evaluateOutcome(previous.before, current,
+                                                   previous.action, firstVisit);
+            if (result.success) {
+                g.failurePose.reset();
+                g.failedActions.fill(false);
+            } else {
+                if (!g.failurePose || *g.failurePose != previous.before)
+                    g.failedActions.fill(false);
+                g.failurePose = previous.before;
+                g.failedActions[static_cast<std::size_t>(previous.action)] = true;
+            }
+            if (g.trainingEnabled &&
+                g.brain.reinforce(previous.features, previous.action,
+                                  result.reward, result.success)) {
+                g.dirty = true;
+                autoSave(false);
+                if (g.brain.samples() % 50 == 0)
+                    std::cout << "[nn] self-learning: " << g.brain.samples()
+                              << " attempts, success=" << g.brain.successRate() * 100.0
+                              << "%, reward=" << g.brain.meanReward() << '\n';
+            }
+        }
+    }
+
+    std::array<bool, OnlinePolicy::kActions> allowed = {
+        !blocked[0], !blocked[2], !blocked[3], !blocked[1], true, true
+    };
+    // Exclude every failed action at the current pose; changing pose clears
+    // the suppression so a previously blocked path may become available.
+    if (g.failurePose && *g.failurePose == current) {
+        for (std::size_t a = 0; a < allowed.size(); ++a)
+            if (g.failedActions[a]) allowed[a] = false;
+    } else {
+        g.failurePose.reset();
+        g.failedActions.fill(false);
+    }
+    std::uniform_real_distribution<double> random(0.0, 1.0);
+    const int action = g.brain.select(features, allowed, random(g.rng), random(g.rng));
+    if (action < 0) {
+        g.failurePose.reset();
+        g.failedActions.fill(false);
+        return;
+    }
+    events.postEvent(0, VM::SYS_KEYDOWN, OnlinePolicy::keyForAction(action));
+    g.pending = State::Pending{features, current, action};
 }
 
 bool saveTo(const std::filesystem::path &path, std::string &error) {

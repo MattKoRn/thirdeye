@@ -10,14 +10,31 @@ namespace VM { class ObjectSystem; class EventSystem; }
 
 namespace THIRDEYE::nn::mode {
 
+// A movement result is only learned after the next host tick has allowed the
+// SOP runtime to process the key. This pure evaluator is unit tested.
+struct Pose {
+    int x = -1, y = -1, facing = -1, level = -1;
+    bool operator==(const Pose &) const = default;
+};
+struct Outcome {
+    bool success;
+    double reward;
+};
+inline Outcome evaluateOutcome(const Pose &before, const Pose &after,
+                               int action, bool firstVisit) {
+    const bool moved = before.x != after.x || before.y != after.y ||
+                       before.level != after.level;
+    const bool turned = before.facing != after.facing;
+    const bool success = action < 4 ? moved : turned;
+    if (!success) return {false, -1.25};
+    if (action >= 4) return {true, 0.08};
+    return {true, firstVisit ? 1.8 : 0.20};
+}
+
 // Pure helpers: testable without SDL or a running game.
 inline std::filesystem::path brainFileForDocuments(
     const std::filesystem::path &documents) {
     return documents / "ThirdeyeNN" / "brain.ckpt";
-}
-
-inline int fallbackKey(const std::array<bool, 4> &blocked) {
-    return !blocked[0] ? 0x4800 : (!blocked[1] ? 0x4900 : 0x4700);
 }
 
 // Per-process brain. It uses the OS Documents folder, not the game-data
@@ -31,14 +48,14 @@ bool toggle();
 void setActive(bool enabled);
 bool consumesManualKey(int32_t code);
 
-void observeKey(int32_t code, VM::ObjectSystem &objects);
-double teach(int32_t code, VM::ObjectSystem &objects);
 void setTraining(bool enabled);
 bool training();
 uint64_t samples();
 double meanLoss();
+double meanReward();
+double successRate();
 
-// Returns a confident learned action (does not apply untrained fallback).
+// Returns the currently preferred action for diagnostics only.
 bool predict(VM::ObjectSystem &objects, int &key, double &confidence);
 
 // Called once each host pump, whether a control socket exists or not.
