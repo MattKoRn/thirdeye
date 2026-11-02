@@ -81,6 +81,53 @@ class InstallerTests(unittest.TestCase):
             install.archive_choices("hack", metadata)
 
 
+    def test_winget_installed_uses_exact_id_not_only_exit_code(self):
+        from types import SimpleNamespace
+        with patch.object(install.subprocess, "run",
+                          return_value=SimpleNamespace(
+                              returncode=0,
+                              stdout="Name  Id  Version\\n7-Zip  7zip.7zip  25.01")) as query:
+            self.assertTrue(install.winget_installed("7zip.7zip"))
+            query.assert_called_once()
+            self.assertEqual(query.call_args.args[0][:4],
+                             ["winget", "list", "--id", "7zip.7zip"])
+        with patch.object(install.subprocess, "run",
+                          return_value=SimpleNamespace(returncode=0,
+                                                       stdout="No installed package found")):
+            self.assertFalse(install.winget_installed("7zip.7zip"))
+        with patch.object(install.subprocess, "run",
+                          return_value=SimpleNamespace(returncode=1,
+                                                       stdout="7zip.7zip")):
+            self.assertFalse(install.winget_installed("7zip.7zip"))
+        with patch.object(install.subprocess, "run",
+                          return_value=SimpleNamespace(returncode=0,
+                                                       stdout="7zip.7zip.fake")):
+            self.assertFalse(install.winget_installed("7zip.7zip"))
+
+    def test_winget_installer_skips_existing_7zip(self):
+        with patch.object(install, "winget_installed", return_value=True), \
+             patch.object(install, "run") as run:
+            install.winget_install_if_missing("7zip.7zip")
+            run.assert_not_called()
+
+    def test_winget_installer_accepts_verified_already_installed_error(self):
+        error = install.subprocess.CalledProcessError(
+            2316632107, ["winget", "install", "--id", "7zip.7zip"])
+        with patch.object(install, "winget_installed",
+                          side_effect=[False, True]) as installed, \
+             patch.object(install, "run", side_effect=error) as run:
+            install.winget_install_if_missing("7zip.7zip")
+            installed.assert_called_with("7zip.7zip")
+            run.assert_called_once()
+
+    def test_winget_installer_still_fails_on_real_install_error(self):
+        error = install.subprocess.CalledProcessError(
+            1, ["winget", "install", "--id", "7zip.7zip"])
+        with patch.object(install, "winget_installed", return_value=False), \
+             patch.object(install, "run", side_effect=error):
+            with self.assertRaises(install.subprocess.CalledProcessError):
+                install.winget_install_if_missing("7zip.7zip")
+
     def test_incremental_build_preserves_objects_and_installed_binary(self):
         """Unchanged reruns skip configure, and clean builds are explicit."""
         with tempfile.TemporaryDirectory() as tmp:
