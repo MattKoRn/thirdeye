@@ -508,6 +508,10 @@ bool parseVolume(const std::vector<uint8_t>& vol, int volIdx,
             pos += 2;
             if (extSize == 0)
                 break;
+            if (pos + size_t(extSize) + 4 > n) {
+                err = "truncated ARJ extended header data";
+                return false;
+            }
             pos += extSize + 4;
         }
 
@@ -532,6 +536,10 @@ bool unarjExtract(const std::vector<std::vector<uint8_t>>& volumes,
         if (!parseVolume(volumes[v], int(v), pieces, err))
             return false;
 
+    // Limit both per-file and cumulative expansion before allocating buffers.
+    // The source installer applies the same 3 GiB safety limit to ZIP content.
+    constexpr uint64_t MAX_UNPACKED = 3ULL * 1024 * 1024 * 1024;
+    uint64_t unpacked = 0;
     size_t i = 0;
     while (i < pieces.size()) {
         const Piece& first = pieces[i];
@@ -560,6 +568,11 @@ bool unarjExtract(const std::vector<std::vector<uint8_t>>& volumes,
         uint64_t totalOrig = 0;
         for (const Piece* p : parts)
             totalOrig += p->origSize;
+        if (totalOrig > MAX_UNPACKED || unpacked > MAX_UNPACKED - totalOrig) {
+            err = "ARJ expanded data exceeds 3 GiB safety limit";
+            return false;
+        }
+        unpacked += totalOrig;
 
         ArjEntry entry;
         entry.name = first.name;
