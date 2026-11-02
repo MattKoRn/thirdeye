@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
         std::string start    = "LEVEL4";
         uint16_t    scale     = 1;
         bool        renderer  = false;
+        bool        windowed  = false;
         bool        forceVM   = false;
         bool        debug     = false;
         bool        nosound   = false;
@@ -58,7 +59,9 @@ int main(int argc, char** argv) {
                        "Path to a game-data directory or a .RES file");
         app.add_option("--game", game, "Which game to play (eob3, hack)");
         app.add_option("--start", start, "Starting location");
-        app.add_option("--scale", scale, "Resolution scale");
+        app.add_option("--scale", scale, "Windowed-mode resolution scale");
+        app.add_flag("--windowed", windowed,
+                     "Use a resizable window instead of borderless fullscreen");
         app.add_flag("--renderer", renderer, "Enable hardware renderer");
         app.add_flag("--vm", forceVM,
                      "Boot the SOP bytecode VM (run the 'start' object) instead of the intro");
@@ -108,6 +111,7 @@ int main(int argc, char** argv) {
             {"start",     start},
             {"scale",     std::to_string(scale)},
             {"renderer",  renderer ? "true" : "false"},
+            {"windowed",  windowed ? "true" : "false"},
             {"vm",        forceVM  ? "true" : "false"},
             {"debug",     debug    ? "true" : "false"},
             {"nosound",   nosound  ? "true" : "false"},
@@ -136,6 +140,7 @@ int main(int argc, char** argv) {
         engine.setDebugMode(toBool(variables["debug"]));
         engine.setSoundUsage(toBool(variables["nosound"]));
         engine.setScale(static_cast<uint16_t>(std::stoi(variables["scale"])));
+        engine.setWindowed(toBool(variables["windowed"]));
 
         engine.go();
     } catch (std::exception &e) {
