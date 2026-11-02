@@ -135,7 +135,9 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
     for (int s : {1, 2, 3, 4, 5}) m_scale->addItem(QString("%1×").arg(s), s);
     auto* videoBox = new QGroupBox(tr("Video"), this);
     auto* videoForm = new QFormLayout(videoBox);
-    videoForm->addRow(tr("Scale:"), m_scale);
+    videoForm->addRow(tr("Windowed scale:"), m_scale);
+    m_windowed = new QCheckBox(tr("Start in a window (F11 toggles fullscreen)"), this);
+    videoForm->addRow(m_windowed);
 
     // Boot group
     m_skipIntro = new QCheckBox(tr("Skip intro cinematic"), this);
@@ -226,6 +228,8 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
     // hand shouldn't hit QSettings I/O once per character.
     connect(m_pathEdit, &QLineEdit::editingFinished, this, [this] { saveSettings(); });
     connect(m_scale, &QComboBox::currentIndexChanged, this, [this](int) { saveSettings(); });
+    connect(m_windowed, &QCheckBox::toggled, this, [this](bool) { saveSettings(); });
+    connect(m_windowed, &QCheckBox::toggled, m_scale, &QComboBox::setEnabled);
     for (auto* cb : {m_skipIntro, m_skipMenu, m_nosound, m_debug})
         connect(cb, &QCheckBox::toggled, this, [this](bool) { saveSettings(); });
 
@@ -658,6 +662,7 @@ void MainWindow::play() {
     QStringList args;
     args << m_pathEdit->text();
     args << QString("--scale=%1").arg(m_scale->currentData().toInt());
+    if (m_windowed->isChecked()) args << "--windowed";
     if (m_skipIntro->isChecked()) args << "--skip-intro";
     if (m_skipMenu->isChecked())  args << "--skip-menu";
     if (m_nosound->isChecked())   args << "--nosound";
@@ -679,6 +684,8 @@ void MainWindow::loadSettings() {
     int idx = m_scale->findData(scale);
     if (idx < 0) idx = m_scale->findData(3);
     m_scale->setCurrentIndex(idx);
+    m_windowed->setChecked(s.value("windowed", false).toBool());
+    m_scale->setEnabled(m_windowed->isChecked());
     m_skipIntro->setChecked(s.value("skipIntro", true).toBool());
     m_skipMenu->setChecked(s.value("skipMenu", false).toBool());
     m_nosound->setChecked(s.value("nosound", false).toBool());
@@ -689,6 +696,7 @@ void MainWindow::saveSettings() const {
     QSettings s;
     s.setValue("gamePath", m_pathEdit->text());
     s.setValue("scale", m_scale->currentData().toInt());
+    s.setValue("windowed", m_windowed->isChecked());
     s.setValue("skipIntro", m_skipIntro->isChecked());
     s.setValue("skipMenu", m_skipMenu->isChecked());
     s.setValue("nosound", m_nosound->isChecked());
