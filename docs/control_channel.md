@@ -282,3 +282,38 @@ pattern.
 2. `save <slot>`: **stubbed as `err unimplemented`**; phase 3 drives the camp
    flow via clicks first, per the lean.
 3. `dump`: **path-only**; the agent reads the BMP itself.
+
+
+## Optional online movement neural network
+
+The live socket (`THIRDEYE_CTL`) now provides an **opt-in** online
+softmax movement policy over the current dungeon pose, facing, and local wall
+map. Six actions are supported: forward (4800), back (5000), strafe left/right
+(4b00/4d00), turn left/right (4700/4900). This is supervised imitation of
+player keypresses, not a replacement for SOP enemy logic or a trained agent
+shipped with the game.
+
+- `nn status` reports training examples, smoothed cross-entropy
+  loss, and learning/autoplay switches.
+- `nn teach 4800` trains on the current pose without issuing movement.
+  Real SDL keyboard movement and `key 4800` also teach by default.
+  `nn train off` suspends implicit teaching; `nn train on`
+  resumes it.
+- `nn predict` reports the movement scancode and confidence.
+  `nn step` executes one prediction; `nn auto on` executes at most
+  one per 40 host pumps until `nn auto off`. Autoplay is **off by default**
+  and requires at least 8 examples and 55% model confidence.
+- `nn save /path/model.ckpt` and `nn load /path/model.ckpt` use
+  validated, versioned, checksummed checkpoints. A failed load leaves the
+  active model unchanged; a successful load replaces weights immediately.
+  Save writes and syncs a sibling temporary file before atomic rename.
+- Set `THIRDEYE_NN_CHECKPOINT=/path/model.ckpt` at launch to
+  restore an existing model automatically, checkpoint after every 32
+  additional examples, and save outstanding learning at shutdown. The
+  checkpoint directory must already exist. Progress is logged at 25-example
+  intervals and after saves/loads.
+
+This feature is intentionally local to the POSIX control socket and idle when
+the socket is not enabled. It does not control the game without explicit
+`nn step` or `nn auto on`. Neural tests are in
+`apps/tests/nn_checkpoint_tests.cpp`.

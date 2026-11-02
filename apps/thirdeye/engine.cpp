@@ -440,6 +440,7 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 			}
 			if (key != 0) {
 				events.postEvent(0, VM::SYS_KEYDOWN, key);
+				THIRDEYE::control::observeKey(key, objects);
 				if (gRecorder.enabled) {
 					char tok[16];
 					std::snprintf(tok, sizeof(tok), "%x", key);

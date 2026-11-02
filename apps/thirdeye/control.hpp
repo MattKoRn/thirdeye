@@ -5,6 +5,7 @@
 // Phase 1: ping / key / click / map / dump over a Unix domain socket, polled
 // from pumpHost. Zero cost when THIRDEYE_CTL is unset.
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,6 +23,9 @@ void init(const std::string &path);
 // (~30 Hz). No-op if init wasn't called or bind failed.
 void pump(GRAPHICS::Graphics *gfx, VM::EventSystem &events,
           VM::ObjectSystem &objects);
+
+// Supervised learning hook for real player keypresses. No-op if the socket is off.
+void observeKey(int32_t code, VM::ObjectSystem &objects);
 
 // Close socket and unlink the file. Safe to call multiple times.
 void shutdown();

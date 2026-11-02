@@ -34,6 +34,10 @@ add_thirdeye_dir (vm
     vm opcodes objects events
     )
 
+add_thirdeye_dir (nn
+    online_policy online_checkpoint
+    )
+
 add_thirdeye_dir (savegame
     transfer lvl_tmp items_tmp savegame_dir
     )

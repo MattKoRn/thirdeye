@@ -38,17 +38,21 @@ void init(const std::string &path) {
 		std::cerr << "[ctl] control channel not supported on Windows\n";
 }
 void pump(GRAPHICS::Graphics *, VM::EventSystem &, VM::ObjectSystem &) {}
+void observeKey(int32_t, VM::ObjectSystem &) {}
 void shutdown() {}
 } // namespace THIRDEYE::control
 
 #else // POSIX implementation
 
 #include "automap.hpp"
+#include "nn/online_policy.hpp"
 #include "graphics/graphics.hpp"
 #include "vm/events.hpp"
 #include "vm/objects.hpp"
 
+#include <array>
 #include <cerrno>
+#include <filesystem>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -71,6 +75,14 @@ std::string gCtlPath;
 // Mirrors the AUTOWALK phase-5 release (see engine.cpp) -- the SOP polls
 // button state across pumps and misses an instant release.
 int gReleaseIn = -1;
+
+// The control channel owns the online learner; no socket means no NN work.
+nn::OnlinePolicy gPolicy;
+bool gTrain = true;
+bool gAuto = false;
+int gAutoTicks = 0;
+std::string gCheckpoint;
+uint64_t gSavedSamples = 0;
 
 void closeClient() {
     if (gClientFd >= 0) {
@@ -141,6 +153,63 @@ int readS(VM::ObjectSystem &objects, int obj, uint16_t cls, uint32_t off,
     return def;
 }
 
+
+// Context: 0=N, 1=E, 2=S, 3=W; blocked in relative F/R/B/L order.
+bool policyFeatures(VM::ObjectSystem &objects, nn::OnlinePolicy::Features &out) {
+    const int kernel = objects.firstObjectOfClass(kKernelCls);
+    const int dungeon = objects.firstObjectOfClass(kDungeonCls);
+    if (kernel < 0 || dungeon < 0) return false;
+    const int x = readS(objects, kernel, kKernelCls, 243, 1);
+    const int y = readS(objects, kernel, kKernelCls, 244, 1);
+    const int dir = readS(objects, kernel, kKernelCls, 245, 1);
+    if (x < 0 || x >= 32 || y < 0 || y >= 32 || dir < 0 || dir >= 4)
+        return false;
+    constexpr std::array<int, 4> dx{0, 1, 0, -1};
+    constexpr std::array<int, 4> dy{-1, 0, 1, 0};
+    std::array<bool, 4> blocked{};
+    for (int i = 0; i < 4; ++i) {
+        const int direction = (dir + i) % 4;
+        const int nx = x + dx[direction];
+        const int ny = y + dy[direction];
+        blocked[i] = (nx < 0 || nx >= 32 || ny < 0 || ny >= 32 ||
+            readS(objects, dungeon, kDungeonCls,
+                  static_cast<uint32_t>(ny * 32 + nx), 1, 0) != 0xff);
+    }
+    out = nn::OnlinePolicy::features(x, y, dir, blocked);
+    return true;
+}
+
+double trainExample(int code, VM::ObjectSystem &objects) {
+    const int action = nn::OnlinePolicy::actionForKey(code);
+    nn::OnlinePolicy::Features context;
+    if (action < 0 || !policyFeatures(objects, context)) return -1.0;
+    const double loss = gPolicy.learn(context, action);
+    if (loss >= 0.0 && gPolicy.samples() % 25 == 0)
+        std::cerr << "[nn] online training: " << gPolicy.samples()
+                  << " examples, smoothed loss=" << gPolicy.meanLoss() << "\n";
+    if (loss >= 0.0 && !gCheckpoint.empty() &&
+        gPolicy.samples() - gSavedSamples >= 32) {
+        std::string error;
+        if (gPolicy.save(gCheckpoint, error)) {
+            gSavedSamples = gPolicy.samples();
+            std::cerr << "[nn] checkpoint saved: " << gSavedSamples << " examples\n";
+        } else {
+            std::cerr << "[nn] checkpoint save failed: " << error << "\n";
+        }
+    }
+    return loss;
+}
+
+bool policyAction(VM::ObjectSystem &objects, int &code, double &confidence) {
+    if (gPolicy.samples() < 8) return false;
+    nn::OnlinePolicy::Features context;
+    if (!policyFeatures(objects, context)) return false;
+    const auto prediction = gPolicy.predict(context);
+    code = nn::OnlinePolicy::keyForAction(prediction.action);
+    confidence = prediction.confidence;
+    return code >= 0 && confidence >= 0.55;
+}
+
 std::string entityName(VM::ObjectSystem &objects, int obj) {
     std::string name;
     try {
@@ -158,12 +227,79 @@ std::string handle(const std::vector<std::string> &tok,
     if (tok.empty()) return "ok\n";
     const std::string &verb = tok[0];
 
+    // Supervised online movement policy; autonomous actions require opt-in.
+    if (verb == "nn") {
+        if (tok.size() < 2)
+            return "err nn <status|teach|train|predict|step|auto|save|load>\n";
+        const std::string &sub = tok[1];
+        if (sub == "status" && tok.size() == 2)
+            return "nn samples=" + std::to_string(gPolicy.samples()) +
+                   " loss=" + std::to_string(gPolicy.meanLoss()) +
+                   " train=" + (gTrain ? "on" : "off") +
+                   " auto=" + (gAuto ? "on" : "off") + "\nok\n";
+        if (sub == "train" && tok.size() == 3 &&
+            (tok[2] == "on" || tok[2] == "off")) {
+            gTrain = tok[2] == "on";
+            return "ok\n";
+        }
+        if (sub == "teach" && tok.size() == 3) {
+            long code = 0;
+            if (!parseHex(tok[2], code) || code < 0 ||
+                nn::OnlinePolicy::actionForKey(static_cast<int>(code)) < 0)
+                return "err teach <4800|5000|4b00|4d00|4700|4900>\n";
+            const double loss = trainExample(static_cast<int>(code), objects);
+            if (loss < 0.0) return "err no valid dungeon pose\n";
+            return "nn learned samples=" + std::to_string(gPolicy.samples()) +
+                   " loss=" + std::to_string(loss) + "\nok\n";
+        }
+        if ((sub == "predict" || sub == "step") && tok.size() == 2) {
+            int code = -1;
+            double confidence = 0.0;
+            if (!policyAction(objects, code, confidence))
+                return "err policy untrained, low confidence, or no dungeon pose\n";
+            if (sub == "step")
+                events.postEvent(0, VM::SYS_KEYDOWN, code);
+            char scan[16];
+            std::snprintf(scan, sizeof(scan), "%04x", code);
+            return "nn key=" + std::string(scan) +
+                   " confidence=" + std::to_string(confidence) + "\nok\n";
+        }
+        if (sub == "auto" && tok.size() == 3 &&
+            (tok[2] == "on" || tok[2] == "off")) {
+            if (tok[2] == "on" && gPolicy.samples() < 8)
+                return "err need at least 8 training examples\n";
+            gAuto = tok[2] == "on";
+            gAutoTicks = 0;
+            return "ok\n";
+        }
+        if (sub == "save" && tok.size() == 3) {
+            std::string error;
+            if (!gPolicy.save(tok[2], error)) return "err " + error + "\n";
+            gCheckpoint = tok[2];
+            gSavedSamples = gPolicy.samples();
+            return "nn checkpoint saved samples=" +
+                   std::to_string(gSavedSamples) + "\nok\n";
+        }
+        if (sub == "load" && tok.size() == 3) {
+            std::string error;
+            if (!gPolicy.load(tok[2], error)) return "err " + error + "\n";
+            gCheckpoint = tok[2];
+            gSavedSamples = gPolicy.samples();
+            std::cerr << "[nn] checkpoint loaded: " << gSavedSamples
+                      << " examples; weights active immediately\n";
+            return "nn checkpoint loaded samples=" +
+                   std::to_string(gSavedSamples) + "\nok\n";
+        }
+        return "err nn <status|teach|train|predict|step|auto|save|load>\n";
+    }
+
     if (verb == "ping") return "ok\n";
 
     if (verb == "key") {
         long code = 0;
         if (tok.size() != 2 || !parseHex(tok[1], code))
             return "err key <hex>\n";
+        observeKey(static_cast<int32_t>(code), objects);
         events.postEvent(0, VM::SYS_KEYDOWN, static_cast<int32_t>(code));
         return "ok\n";
     }
@@ -405,6 +541,11 @@ std::string handle(const std::vector<std::string> &tok,
 
 } // namespace
 
+void observeKey(int32_t code, VM::ObjectSystem &objects) {
+    if (gListenFd >= 0 && gTrain)
+        (void)trainExample(code, objects);
+}
+
 void init(const std::string &path) {
     if (path.empty()) return;
     if (gListenFd >= 0) shutdown();
@@ -443,11 +584,39 @@ void init(const std::string &path) {
     gListenFd = fd;
     gCtlPath = path;
     std::cerr << "[ctl] listening on " << path << "\n";
+    gPolicy = nn::OnlinePolicy{};
+    gTrain = true;
+    gAuto = false;
+    gAutoTicks = 0;
+    gSavedSamples = 0;
+    gCheckpoint.clear();
+    if (const char *name = std::getenv("THIRDEYE_NN_CHECKPOINT")) {
+        gCheckpoint = name;
+        if (!gCheckpoint.empty() && std::filesystem::exists(gCheckpoint)) {
+            std::string error;
+            if (gPolicy.load(gCheckpoint, error)) {
+                gSavedSamples = gPolicy.samples();
+                std::cerr << "[nn] restored " << gSavedSamples
+                          << " examples (live weights active)\n";
+            } else {
+                std::cerr << "[nn] rejected checkpoint: " << error << "\n";
+            }
+        }
+    }
 }
 
 void pump(GRAPHICS::Graphics *gfx, VM::EventSystem &events,
           VM::ObjectSystem &objects) {
     if (gListenFd < 0) return;
+
+    // Only explicit opt-in can actuate. Never train on generated actions.
+    if (gAuto && ++gAutoTicks >= 40) {
+        gAutoTicks = 0;
+        int code = -1;
+        double confidence = 0.0;
+        if (policyAction(objects, code, confidence))
+            events.postEvent(0, VM::SYS_KEYDOWN, code);
+    }
 
     // Deferred click release. Runs before we handle new commands so a
     // client can `click` then `dump` a few pumps later and see the effect.
@@ -508,6 +677,17 @@ void pump(GRAPHICS::Graphics *gfx, VM::EventSystem &events,
 }
 
 void shutdown() {
+    if (gListenFd >= 0 && !gCheckpoint.empty() &&
+        gPolicy.samples() != gSavedSamples) {
+        std::string error;
+        if (gPolicy.save(gCheckpoint, error)) {
+            gSavedSamples = gPolicy.samples();
+            std::cerr << "[nn] checkpoint saved on exit\n";
+        } else {
+            std::cerr << "[nn] checkpoint save failed on exit: " << error << "\n";
+        }
+    }
+    gAuto = false;
     closeClient();
     if (gListenFd >= 0) {
         ::close(gListenFd);
