@@ -461,8 +461,6 @@ def archive_file_valid(path, metadata):
                 digest.update(chunk)
         return digest.hexdigest() == expected_sha1
     # Metadata without a checksum: validate ZIP CRCs before reusing a cache.
-    if not size:
-        return False
     try:
         with zipfile.ZipFile(path) as archive:
             return archive.testzip() is None
@@ -492,6 +490,10 @@ def archive_download_file(item, metadata, cache):
         partial.replace(target)
         info("Recovered completed download: " + filename)
         return target
+    if partial.is_file() and size and partial.stat().st_size == size:
+        # A complete-length but corrupt partial cannot be resumed (HTTP 416).
+        info("Restarting invalid completed partial: " + filename)
+        partial.unlink()
 
     url = ("https://archive.org/download/" +
            urllib.parse.quote(item, safe="") + "/" +
