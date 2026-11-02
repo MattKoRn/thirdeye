@@ -10,7 +10,8 @@ namespace GRAPHICS {
 // escape hatch (and F11's restored window).
 constexpr SDL_WindowFlags gameWindowFlags(bool windowed) {
     return windowed ? SDL_WINDOW_RESIZABLE
-                    : (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS);
+                    : (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS |
+                       SDL_WINDOW_RESIZABLE);
 }
 
 // The game always renders to a fixed 320x200 canvas. STRETCH fills the entire
