@@ -3,7 +3,9 @@ param(
   [ValidateSet("eob3","hack","skip")][string]$Game,
   [string]$Source,
   [switch]$Archive,
-  [switch]$NoDeps
+  [switch]$NoDeps,
+  [switch]$CleanBuild,
+  [switch]$RefreshDeps
 )
 $ErrorActionPreference = "Stop"
 $python = Get-Command py -ErrorAction SilentlyContinue
@@ -32,5 +34,7 @@ if ($Game) { $arguments += @("--game", $Game) }
 if ($Source) { $arguments += @("--source", $Source) }
 if ($Archive) { $arguments += "--archive" }
 if ($NoDeps) { $arguments += "--no-deps" }
+if ($CleanBuild) { $arguments += "--clean-build" }
+if ($RefreshDeps) { $arguments += "--refresh-deps" }
 & $exe @arguments
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
