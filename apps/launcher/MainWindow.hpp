@@ -36,6 +36,7 @@ private:
     QLineEdit*   m_pathEdit    {};
     QLabel*      m_pathStatus  {};
     QComboBox*   m_scale       {};
+    QCheckBox*   m_windowed    {};
     QCheckBox*   m_skipIntro   {};
     QCheckBox*   m_skipMenu    {};
     QCheckBox*   m_nosound     {};
