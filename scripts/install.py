@@ -7,6 +7,7 @@ opt-in and require the operator to confirm their right to download the files.
 from __future__ import annotations
 
 import argparse
+import filecmp
 import hashlib
 import json
 import os
@@ -120,36 +121,83 @@ def ensure_dependencies(kind):
                  "--accept-package-agreements", "--accept-source-agreements"])
 
 
-def vcpkg_toolchain(home):
+def vcpkg_toolchain(home, provision=True):
     root = Path(os.environ.get("VCPKG_ROOT", str(home / "vcpkg")))
     exe = root / "vcpkg.exe"
-    if not exe.exists():
-        if not shutil.which("git"):
-            fail("Git is missing; reopen your terminal after winget has installed it.")
-        if not root.exists():
-            run(["git", "clone", "https://github.com/microsoft/vcpkg.git", str(root)])
-        run(["cmd", "/c", str(root / "bootstrap-vcpkg.bat")])
-    run([str(exe), "install", "sdl3", "openal-soft", "--triplet", "x64-windows"])
+    if provision:
+        if not exe.exists():
+            if not shutil.which("git"):
+                fail("Git is missing; reopen your terminal after winget has installed it.")
+            if not root.exists():
+                run(["git", "clone", "https://github.com/microsoft/vcpkg.git", str(root)])
+            run(["cmd", "/c", str(root / "bootstrap-vcpkg.bat")])
+        run([str(exe), "install", "sdl3", "openal-soft", "--triplet", "x64-windows"])
+    elif not exe.is_file():
+        fail("vcpkg is missing. Restore it or rerun with --clean-build.")
     return root / "scripts/buildsystems/vcpkg.cmake", root / "installed/x64-windows/bin"
 
 
-def build_engine(kind, home):
+def build_is_configured(build):
+    """Only a successful installer configure is enough to skip dependency setup."""
+    return (build / "CMakeCache.txt").is_file() and (build / ".installer-config.json").is_file()
+
+
+def copy_if_changed(source, destination):
+    """Preserve timestamps on already-installed binaries and DLLs."""
+    if not destination.is_file() or not filecmp.cmp(source, destination, shallow=False):
+        shutil.copy2(source, destination)
+
+
+def build_engine(kind, home, clean=False, install_deps=True, refresh_deps=False):
+    # Never delete this directory in the normal path: CMake's generator tracks
+    # source/header dependencies and reuses unchanged object files.
     build = ROOT / "build" / "installer"
+    if clean and build.exists():
+        info("Requested clean rebuild: removing " + str(build))
+        shutil.rmtree(build)
     cmake = shutil.which("cmake")
     if not cmake:
         fail("CMake not on PATH. Reopen your terminal after dependency installation.")
     options = ["-DUNIT_TESTS=OFF", "-DBUILD_LAUNCHER=OFF",
                "-DBUILD_ARC=OFF", "-DBUILD_DAESOP=OFF"]
+    generator = "Visual Studio 17 2022" if kind == "windows" else "Ninja"
+    toolchain = None
     vcpkg_bin = None
     if kind == "windows":
-        toolchain, vcpkg_bin = vcpkg_toolchain(home)
-        args = [cmake, "-S", ROOT, "-B", build, "-G", "Visual Studio 17 2022",
-                "-A", "x64", "-DCMAKE_BUILD_TYPE=Release",
-                "-DCMAKE_TOOLCHAIN_FILE=" + str(toolchain)] + options
+        root = Path(os.environ.get("VCPKG_ROOT", str(home / "vcpkg")))
+        toolchain = root / "scripts/buildsystems/vcpkg.cmake"
+        vcpkg_bin = root / "installed/x64-windows/bin"
+    settings = {"source": str(ROOT.resolve()), "generator": generator,
+                "architecture": "x64" if kind == "windows" else None,
+                "toolchain": str(toolchain) if toolchain else None,
+                "build_type": "Release", "options": options}
+    config_stamp = build / ".installer-config.json"
+    generated = (any(build.glob("*.sln")) if kind == "windows" else
+                 (build / "build.ninja").is_file())
+    try:
+        configured = (build_is_configured(build) and generated and
+                      json.loads(config_stamp.read_text(encoding="utf-8")) == settings)
+    except (OSError, ValueError):
+        configured = False
+    if not configured:
+        if kind == "windows":
+            # Skip vcpkg's install step when just reusing a configured build.
+            vcpkg_toolchain(home, provision=install_deps)
+            args = [cmake, "-S", ROOT, "-B", build, "-G", generator,
+                    "-A", "x64", "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_TOOLCHAIN_FILE=" + str(toolchain)] + options
+        else:
+            args = [cmake, "-S", ROOT, "-B", build, "-G", generator,
+                    "-DCMAKE_BUILD_TYPE=Release"] + options
+        info("Configuring installer build (existing objects will be preserved).")
+        run(args)
+        config_stamp.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    elif kind == "windows":
+        vcpkg_toolchain(home, provision=install_deps and refresh_deps)
     else:
-        args = [cmake, "-S", ROOT, "-B", build, "-G", "Ninja",
-                "-DCMAKE_BUILD_TYPE=Release"] + options
-    run(args)
+        info("Reusing CMake configuration in " + str(build))
+    info("Incremental build: only changed sources and their dependencies will compile.")
+    # Ninja/MSBuild automatically rerun CMake when CMakeLists.txt files change.
     run([cmake, "--build", build, "--target", "thirdeye", "--config", "Release",
          "--parallel", "2"])
     candidates = ([build / "thirdeye.app/Contents/MacOS/thirdeye"] if kind == "mac" else
@@ -161,14 +209,14 @@ def build_engine(kind, home):
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     installed = bin_dir / executable.name
-    shutil.copy2(executable, installed)
+    copy_if_changed(executable, installed)
     if kind == "windows":
         for dll_dir in [vcpkg_bin, build, build / "Release"]:
             if dll_dir and dll_dir.is_dir():
                 for dll in dll_dir.glob("*.dll"):
-                    shutil.copy2(dll, bin_dir / dll.name)
+                    copy_if_changed(dll, bin_dir / dll.name)
         for dll in build.rglob("*wildmidi*.dll"):
-            shutil.copy2(dll, bin_dir / dll.name)
+            copy_if_changed(dll, bin_dir / dll.name)
     else:
         installed.chmod(installed.stat().st_mode | stat.S_IXUSR)
     run([installed, "--version"])
@@ -526,17 +574,28 @@ def main(argv=None):
                     help="Use Internet Archive metadata and opt-in download")
     ap.add_argument("--no-deps", action="store_true",
                     help="Build with previously installed dependencies")
+    ap.add_argument("--clean-build", action="store_true",
+                    help="Discard installer build cache and compile everything from scratch")
+    ap.add_argument("--refresh-deps", action="store_true",
+                    help="Run dependency installers again even if the build already exists")
     args = ap.parse_args(argv)
     if args.archive and args.source:
         ap.error("--archive and --source cannot be used together")
+    if args.no_deps and args.refresh_deps:
+        ap.error("--no-deps and --refresh-deps cannot be used together")
     kind = os_name()
     home = app_root(kind)
     home.mkdir(parents=True, exist_ok=True)
     info("Platform: {} ({})".format(kind, platform.machine()))
     game, already = select_game(home, args.game)
     if not args.no_deps:
-        ensure_dependencies(kind)
-    executable = build_engine(kind, home)
+        if args.clean_build or args.refresh_deps or not build_is_configured(ROOT / "build" / "installer"):
+            ensure_dependencies(kind)
+        else:
+            info("Reusing installed build dependencies (use --refresh-deps to update).")
+    executable = build_engine(kind, home, clean=args.clean_build,
+                              install_deps=not args.no_deps,
+                              refresh_deps=args.refresh_deps)
     data = install_data(home, game, already, args)
     shortcut = make_shortcut(kind, home, executable, game, data)
     config = {"game": game, "game_data": str(data), "engine": str(executable),
