@@ -103,8 +103,8 @@ class InstallerTests(unittest.TestCase):
                     # when inputs changed; simulate an identical build result.
                     (build / "thirdeye").write_bytes(b"engine")
 
-            with patch.object(install, "ROOT", root), \\
-                 patch.object(install.shutil, "which", return_value="/usr/bin/cmake"), \\
+            with patch.object(install, "ROOT", root), \
+                 patch.object(install.shutil, "which", return_value="/usr/bin/cmake"), \
                  patch.object(install, "run", side_effect=fake_run):
                 exe = install.build_engine("linux", home)
                 self.assertTrue(exe.is_file())
