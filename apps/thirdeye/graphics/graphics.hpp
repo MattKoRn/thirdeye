@@ -7,6 +7,7 @@
 #include "font.hpp"
 #include "palette.hpp"
 #include "bitmap.hpp"
+#include "presentation.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -183,7 +184,7 @@ private:
 	void drawCurtain(std::vector<uint8_t> bmp);
 
 public:
-	Graphics(uint16_t scale = 1, bool renderer = false);
+	Graphics(uint16_t scale = 1, bool renderer = false, bool windowed = false);
 	virtual ~Graphics();
 
 	// mirror: AESOP draw_bitmap mirror flag (GIL2VFX) -- 1=X (horizontal flip),
@@ -348,13 +349,15 @@ public:
 	// Save the current screen surface to a BMP (debug / headless verification).
 	void saveScreenshot(const std::string &path);
 
-	// Map a window-pixel coordinate (from an SDL mouse event) to the 320x200
-	// logical space the game's windows use. Accounts for the integer scale.
+	// Clamp event coordinates already converted by SDL3 to the logical
+	// 320x200 canvas, including non-uniform fullscreen stretch.
 	void mouseToLogical(int wx, int wy, int &lx, int &ly) const;
 
 	// Expose the SDL window. Needed by SDL3's SDL_StartTextInput / StopTextInput
 	// (which now take the target window, no longer global).
 	SDL_Window *getWindow() const { return mWindow; }
+	// F11 switches between borderless desktop fullscreen and a normal window.
+	void toggleFullscreen();
 	// Expose the renderer so callers can call SDL_ConvertEventToRenderCoordinates
 	// (SDL3 no longer auto-rescales event coords for logical presentation).
 	SDL_Renderer *getRenderer() const { return mRenderer; }
