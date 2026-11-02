@@ -250,6 +250,13 @@ else()
 endif()
 
 
+# Small native ARJ extractor used by the source installer. Reuse the
+# launcher's proven multi-volume decoder without bringing in Qt.
+add_executable(thirdeye-unarj
+    tools/unarj_extract.cpp
+    apps/launcher/unarj.cpp
+)
+
 if (NOT WIN32 AND NOT APPLE)
     configure_file(${Thirdeye_SOURCE_DIR}/files/thirdeye.desktop
         "${Thirdeye_BINARY_DIR}/thirdeye.desktop")
