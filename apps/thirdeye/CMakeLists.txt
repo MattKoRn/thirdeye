@@ -35,7 +35,7 @@ add_thirdeye_dir (vm
     )
 
 add_thirdeye_dir (nn
-    online_policy online_checkpoint online_mode
+    online_policy online_checkpoint online_mode combat_mode
     )
 
 add_thirdeye_dir (savegame

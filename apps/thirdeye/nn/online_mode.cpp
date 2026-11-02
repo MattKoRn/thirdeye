@@ -1,4 +1,5 @@
 #include "online_mode.hpp"
+#include "combat_mode.hpp"
 #include "online_policy.hpp"
 
 #include "../vm/events.hpp"
@@ -178,11 +179,14 @@ void initialize() {
     if (g.storageReady && !g.checkpointPresent)
         std::cout << "[nn] new brain checkpoint=new path="
                   << g.file.string() << '\n';
+    // Independent v2 sidecar; legacy movement checkpoints remain unchanged.
+    combat::initialize(folder / "combat.ckpt");
 }
 
 void shutdown() {
     if (!g.initialized) return;
     autoSave(true);
+    combat::shutdown();
     g.autonomous = false;
     g.pending.reset();
 }
@@ -197,6 +201,7 @@ bool active() { return g.autonomous; }
 void setActive(bool enabled) {
     initialize();
     g.autonomous = enabled;
+    combat::cancel();
     g.pacer.reset(ActionPacer::Clock::now());
     g.pending.reset();
     g.failurePose.reset();
@@ -220,6 +225,13 @@ double meanLoss() { initialize(); return g.brain.meanLoss(); }
 double meanReward() { initialize(); return g.brain.meanReward(); }
 double successRate() { initialize(); return g.brain.successRate(); }
 double learningRate() { initialize(); return g.brain.learningRate(); }
+uint64_t combatSamples() { initialize(); return combat::samples(); }
+double combatMeanReward() { initialize(); return combat::meanReward(); }
+double combatSuccessRate() { initialize(); return combat::successRate(); }
+const char *combatCheckpointStatus() {
+    initialize();
+    return combat::checkpointStatus();
+}
 const char *checkpointStatus() {
     initialize();
     if (!g.storageReady) return "unavailable";
@@ -239,9 +251,12 @@ bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
     return key >= 0 && confidence >= 0.55 && canMove(prediction.action, blocked);
 }
 
-void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive) {
+void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
+          bool uiActive, bool eob3) {
+    combat::release(events); // always release pending click on next host pump
     // Never interpret changes caused by menus or manual control as rewards.
     if (!g.autonomous || uiActive) {
+        combat::cancel();
         g.pending.reset();
         // Returning from a menu or restarting autonomous play must not
         // release an action accumulated while gameplay was unavailable.
@@ -256,10 +271,13 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive) {
     std::array<bool, 4> blocked{};
     Pose current;
     if (!context(objects, features, blocked, &current) || current.level < 0) {
+        combat::cancel();
         g.pending.reset();
         return;
     }
     const bool firstVisit = g.visited.insert(visitKey(current)).second;
+    if (eob3) combat::observe(objects, current, g.trainingEnabled);
+    else combat::cancel();
 
     // Only reward or penalize a move AFTER the SOP engine has processed it.
     if (g.pending) {
@@ -302,6 +320,11 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive) {
         }
     }
 
+    // First live combat interaction: attack a verified front-cell monster.
+    // No invented keyboard attack codes; actual EOB3 weapon hit regions.
+    if (eob3 && combat::attack(events, objects, current, blocked))
+        return;
+
     std::array<bool, OnlinePolicy::kActions> allowed = {
         !blocked[0], !blocked[2], !blocked[3], !blocked[1], true, true
     };
@@ -336,6 +359,7 @@ bool saveTo(const std::filesystem::path &path, std::string &error) {
 bool loadFrom(const std::filesystem::path &path, std::string &error) {
     initialize();
     if (!g.brain.load(path, error)) return false;
+    combat::cancel();
     // Do not train the imported weights on feedback from a pre-import action.
     g.pending.reset();
     g.failurePose.reset();

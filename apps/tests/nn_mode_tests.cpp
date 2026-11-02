@@ -141,3 +141,33 @@ TEST(nnMode, LearnsValidStairTransitionsButNotScriptedTurns) {
     EXPECT_FALSE(turningDuringTransition.success);
     EXPECT_LT(turningDuringTransition.reward, 0);
 }
+
+TEST(nnMode, CombatTargetsOnlyLivingEnemiesInFrontCellOnSameFloor) {
+    const mode::Pose north{10, 10, 0, 3};
+    EXPECT_TRUE(mode::targetDirectlyAhead(north, {10, 9, -1, 3}));
+    EXPECT_FALSE(mode::targetDirectlyAhead(north, {11, 10, -1, 3}));
+    EXPECT_FALSE(mode::targetDirectlyAhead(north, {10, 10, -1, 3}));
+    EXPECT_FALSE(mode::targetDirectlyAhead(north, {10, 9, -1, 4}));
+    EXPECT_FALSE(mode::targetDirectlyAhead(north, {10, 8, -1, 3}));
+    EXPECT_FALSE(mode::targetDirectlyAhead(north, {255, 255, -1, 3}));
+    EXPECT_TRUE(mode::targetDirectlyAhead({10, 10, 1, 3}, {11, 10, -1, 3}));
+    EXPECT_TRUE(mode::targetDirectlyAhead({10, 10, 2, 3}, {10, 11, -1, 3}));
+    EXPECT_TRUE(mode::targetDirectlyAhead({10, 10, 3, 3}, {9, 10, -1, 3}));
+}
+
+TEST(nnMode, CombatRewardDependsOnObservedDamageNotClickedButton) {
+    const auto dealt = mode::evaluateCombatOutcome(18, 10);
+    ASSERT_TRUE(dealt);
+    EXPECT_TRUE(dealt->success);
+    EXPECT_GT(dealt->reward, 0);
+    const auto blocked = mode::evaluateCombatOutcome(18, 18);
+    ASSERT_TRUE(blocked);
+    EXPECT_FALSE(blocked->success);
+    EXPECT_LT(blocked->reward, 0);
+    const auto killed = mode::evaluateCombatOutcome(18, 0);
+    ASSERT_TRUE(killed);
+    EXPECT_DOUBLE_EQ(killed->reward, 2.0);
+    EXPECT_FALSE(mode::evaluateCombatOutcome(18, 20)); // healing/another NPC
+    EXPECT_FALSE(mode::evaluateCombatOutcome(18, -1)); // missing reading
+    EXPECT_FALSE(mode::evaluateCombatOutcome(0, 0)); // already dead
+}

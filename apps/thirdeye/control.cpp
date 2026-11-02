@@ -171,6 +171,10 @@ std::string handle(const std::vector<std::string> &tok,
                    " success=" + std::to_string(nn::mode::successRate()) +
                    " rate=" + std::to_string(nn::mode::learningRate()) +
                    " checkpoint=" + nn::mode::checkpointStatus() +
+                   " combat_samples=" + std::to_string(nn::mode::combatSamples()) +
+                   " combat_reward=" + std::to_string(nn::mode::combatMeanReward()) +
+                   " combat_success=" + std::to_string(nn::mode::combatSuccessRate()) +
+                   " combat_checkpoint=" + nn::mode::combatCheckpointStatus() +
                    " self_train=" + (nn::mode::training() ? "on" : "off") +
                    " auto=" + (nn::mode::active() ? "on" : "off") + "\nok\n";
         if (sub == "train" && tok.size() == 3 &&

@@ -3,10 +3,12 @@
 
 #include "online_policy.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <unordered_set>
 
@@ -54,6 +56,26 @@ inline Outcome evaluateOutcome(const Pose &before, const Pose &after,
     if (action >= 4) return {true, 0.08};
     if (changedLevel) return {true, 2.0};
     return {true, firstVisit ? 1.8 : 0.20};
+}
+
+// Only a monster in the facing adjacent cell may be attacked.
+inline bool targetDirectlyAhead(const Pose &party, const Pose &enemy) {
+    if (party.level < 0 || party.facing < 0 || party.facing >= 4 ||
+        party.level != enemy.level || enemy.x < 0 || enemy.x >= 32 ||
+        enemy.y < 0 || enemy.y >= 32) return false;
+    constexpr std::array<int, 4> dx{0, 1, 0, -1};
+    constexpr std::array<int, 4> dy{-1, 0, 1, 0};
+    return enemy.x == party.x + dx[party.facing] &&
+           enemy.y == party.y + dy[party.facing];
+}
+
+// Measure reward from observed NPC HP loss, not from a click being sent.
+inline std::optional<Outcome> evaluateCombatOutcome(int beforeHP, int afterHP) {
+    if (beforeHP <= 0 || afterHP < 0 || afterHP > beforeHP)
+        return std::nullopt;
+    const int damage = beforeHP - afterHP;
+    if (damage == 0) return Outcome{false, -0.4};
+    return Outcome{true, std::min(2.0, 0.25 + damage / 8.0)};
 }
 
 // Prioritize accessible, unexplored neighbouring cells before backtracking.
@@ -110,12 +132,18 @@ double meanReward();
 double successRate();
 double learningRate();
 const char *checkpointStatus();
+uint64_t combatSamples();
+double combatMeanReward();
+double combatSuccessRate();
+const char *combatCheckpointStatus();
 
 // Returns the currently preferred action for diagnostics only.
 bool predict(VM::ObjectSystem &objects, int &key, double &confidence);
 
 // Called once each host pump, whether a control socket exists or not.
-void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive);
+// Known EOB3 weapon coordinates must never be sent to Dungeon Hack.
+void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
+          bool uiActive, bool eob3);
 
 // Manual import/export for control clients. Automatic persistence remains in
 // Documents/ThirdeyeNN/brain.ckpt, independent of these file paths.

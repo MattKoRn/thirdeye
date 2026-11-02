@@ -245,3 +245,35 @@ TEST(nnCheckpoint, AdaptiveRateDecaysAndRestoresWithSamples) {
     ASSERT_TRUE(restored.reinforce(kContext, 2, -1.25, false));
     EXPECT_LT(restored.learningRate(), decayed);
 }
+
+TEST(nnCheckpoint, SeparateCombatPolicyLearnsAndRestoresWithoutMutatingMovement) {
+    TempCheckpoint tmp;
+    OnlinePolicy movement;
+    OnlinePolicy combat;
+    auto combatFeatures = kContext;
+    combatFeatures[7] = 0.3;   // first party member HP fraction
+    combatFeatures[8] = 0.8;   // second party member HP fraction
+    combatFeatures[9] = 0.9;   // fourth party member HP fraction
+    combatFeatures[10] = 0.25; // enemy HP context
+    const std::array<bool, OnlinePolicy::kActions> available{
+        true, true, true, false, false, false
+    };
+    const auto movementWeights = movement.weights();
+    for (int n = 0; n < 150; ++n)
+        ASSERT_TRUE(combat.reinforce(combatFeatures, 2, 1.6, true));
+    EXPECT_EQ(combat.select(combatFeatures, available, 1.0, 0.5), 2);
+    EXPECT_EQ(movement.weights(), movementWeights);
+    const auto combatPath = tmp.dir / "combat.ckpt";
+    std::string error;
+    ASSERT_TRUE(combat.save(combatPath, error)) << error;
+    ASSERT_TRUE(movement.save(tmp.path, error)) << error;
+    OnlinePolicy restoredMovement;
+    OnlinePolicy restoredCombat;
+    ASSERT_TRUE(restoredMovement.load(tmp.path, error)) << error;
+    ASSERT_TRUE(restoredCombat.load(combatPath, error)) << error;
+    EXPECT_EQ(restoredCombat.weights(), combat.weights());
+    EXPECT_EQ(restoredCombat.samples(), combat.samples());
+    EXPECT_EQ(restoredCombat.select(combatFeatures, available, 1.0, 0.5), 2);
+    EXPECT_EQ(restoredMovement.weights(), movementWeights);
+    EXPECT_EQ(restoredMovement.samples(), 0u);
+}

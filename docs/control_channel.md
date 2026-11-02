@@ -315,8 +315,26 @@ count, mean reward, success ratio, learning rate, checkpoint state
 Importing a checkpoint while autonomous play is active discards stale
 feedback from the old policy before applying the loaded weights.
 
-The neural brain automatically loads from the operating system's resolved
-Documents folder, at `Documents/ThirdeyeNN/brain.ckpt`.
+**Autonomous EOB3 combat (first supported interaction).** When F1 autonomy
+is active, a living enemy immediately ahead on the same floor triggers
+right-click weapon attacks through the existing event queue. The agent
+observes NPC HP from class 1622 and selects an alive party member (slots
+0, 1, or 3) using the verified EOB3 weapon-icon coordinates. A separate
+online softmax policy rewards observed damage and penalizes non-damaging
+attacks; invalid or unobservable target transitions are not trained on.
+The mouse press is released on the next host pump, and menus, manual
+mode, and scene resets cancel pending attack feedback. Combat is disabled
+in Dungeon Hack until its character offsets and button coordinates have
+been verified. This does **not** yet automate items, spells, or healing.
+
+The neural movement brain automatically loads from the operating system's
+resolved Documents folder, at `Documents/ThirdeyeNN/brain.ckpt`.
+Combat learning independently loads/saves
+`Documents/ThirdeyeNN/combat.ckpt`. Both use the existing
+checksum-protected `THIRDEYE_NN 2` format: no migration or change to
+prior movement checkpoints is required. Combat autosaves every 16 learned
+outcomes and on shutdown. `nn status` reports `combat_samples`,
+`combat_reward`, `combat_success`, and `combat_checkpoint`.
 The directory is created as needed. It saves **silently** after 32
 new autonomous training results and on clean exit. The checkpoint uses
 atomic replacement, a version header, a checksum, and strict numeric

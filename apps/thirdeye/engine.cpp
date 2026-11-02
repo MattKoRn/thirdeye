@@ -600,7 +600,8 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	// Live control channel: polled here so a client's inject/dump lands in
 	// the same pump slot AUTOWALK would use. No-op when THIRDEYE_CTL unset.
 	THIRDEYE::nn::mode::pump(events, objects,
-		THIRDEYE::runtime::uiScreenActive(objects));
+		THIRDEYE::runtime::uiScreenActive(objects),
+		!THIRDEYE::runtime::gDungeonHack);
 	THIRDEYE::control::pump(&gfx, events, objects);
 	// Debug: THIRDEYE_AUTOKEY=<decimal SDL scancode> pushes a synthetic key-down
 	// with that physical scancode every ~40 pumps, so the real key handler (WASD/QE/
