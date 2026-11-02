@@ -117,6 +117,9 @@ inline std::filesystem::path brainFileForDocuments(
 // directory. All functions are called on the host (SDL) thread.
 void initialize();
 void shutdown();
+// Preserve all confirmed movement, combat, and weakness observations before
+// an nn-1..nn-3 native game restore without resetting live model weights.
+void flushLearning();
 std::filesystem::path checkpointPath();
 
 bool active();

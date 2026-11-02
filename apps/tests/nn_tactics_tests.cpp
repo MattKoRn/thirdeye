@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 #include "../thirdeye/nn/tactical_memory.hpp"
+#include "../thirdeye/nn/online_policy.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -79,6 +80,67 @@ TEST(nnTactics, WeaknessesPersistAndApplyImmediatelyAfterReload) {
     EXPECT_EQ(restored.experience(wand).hits, 12u);
     EXPECT_EQ(restored.experience(axe).hits, 0u);
     EXPECT_EQ(restored.select(options, 0.75), 1);
+}
+
+TEST(nnTactics, CombatPolicySelectsLearnedAttackerWithEquivalentEquipmentAfterReload) {
+    TempMemory t;
+    tactics::Memory weaknesses;
+    THIRDEYE::nn::OnlinePolicy combatPolicy;
+    const tactics::Signature sword{1904, 1324, tactics::Kind::Melee};
+    const std::vector<tactics::Candidate> equipped{
+        {0, sword}, {1, sword}, {3, sword}
+    };
+    const auto features = THIRDEYE::nn::OnlinePolicy::features(
+        7, 8, 0, {false, false, false, false});
+    const std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> allowed{
+        true, true, true, false, false, false
+    };
+
+    // Initially the tactical selector always chose the first equivalent
+    // weapon, ignoring the combat policy's per-character learned rewards.
+    EXPECT_EQ(weaknesses.select(equipped, 0.0), 0);
+    for (int i = 0; i < 200; ++i) {
+        ASSERT_TRUE(combatPolicy.reinforce(features, 2, 1.6, true));
+        weaknesses.learn(sword, 6);
+    }
+    const int attackerAction = combatPolicy.select(features, allowed, 1.0, 0.5);
+    ASSERT_EQ(attackerAction, 2);
+    EXPECT_EQ(weaknesses.select(equipped, 0.0, equipped[attackerAction].partySlot), 2);
+
+    std::string error;
+    const auto combatPath = t.dir / "combat.ckpt";
+    ASSERT_TRUE(weaknesses.save(t.file, error)) << error;
+    ASSERT_TRUE(combatPolicy.save(combatPath, error)) << error;
+    tactics::Memory restoredWeaknesses;
+    THIRDEYE::nn::OnlinePolicy restoredCombatPolicy;
+    ASSERT_TRUE(restoredWeaknesses.load(t.file, error)) << error;
+    ASSERT_TRUE(restoredCombatPolicy.load(combatPath, error)) << error;
+    const int restoredAction =
+        restoredCombatPolicy.select(features, allowed, 1.0, 0.5);
+    ASSERT_EQ(restoredAction, 2);
+    EXPECT_EQ(restoredWeaknesses.select(
+        equipped, 0.0, equipped[restoredAction].partySlot), 2);
+    EXPECT_EQ(restoredWeaknesses.samples(), 200u);
+    EXPECT_EQ(restoredCombatPolicy.samples(), 200u);
+}
+
+TEST(nnTactics, AttackerPreferenceCannotOverrideDifferentSpellExperiment) {
+    tactics::Memory weaknesses;
+    const tactics::Signature weapon{1904, 1324, tactics::Kind::Melee};
+    const tactics::Signature spell{1904, 1377, tactics::Kind::ScrollSpell, 12};
+    const std::vector<tactics::Candidate> candidates{
+        {0, weapon}, {1, weapon}, {3, spell}
+    };
+    // Preferred PC1 can break ties among identical swords, but cannot
+    // redirect the exploration of an entirely new spell back to a sword.
+    EXPECT_EQ(weaknesses.select(candidates, 0.0, 1), 1);
+    EXPECT_EQ(weaknesses.select(candidates, 0.99, 1), 2);
+    for (int i = 0; i < 12; ++i) {
+        weaknesses.learn(weapon, 0);
+        weaknesses.learn(spell, 12);
+    }
+    EXPECT_EQ(weaknesses.select(candidates, 0.0, 1), 2);
+    EXPECT_EQ(weaknesses.select(candidates, 0.0, 99), 2);
 }
 
 TEST(nnTactics, DamagedCheckpointDoesNotEraseLiveLearning) {

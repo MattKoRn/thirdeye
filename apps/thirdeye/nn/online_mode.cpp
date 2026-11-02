@@ -183,9 +183,15 @@ void initialize() {
     combat::initialize(folder / "combat.ckpt");
 }
 
-void shutdown() {
+void flushLearning() {
     if (!g.initialized) return;
     autoSave(true);
+    combat::flushLearning();
+}
+
+void shutdown() {
+    if (!g.initialized) return;
+    flushLearning();
     combat::shutdown();
     g.autonomous = false;
     g.pending.reset();

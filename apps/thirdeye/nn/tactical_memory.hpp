@@ -37,7 +37,11 @@ public:
     // UCB1 exploration, with each unseen tactic tried before exploitation.
     // No action is sent by this pure selector. Candidate list comes only from
     // currently equipped, living party members and a visible enemy.
-    int select(const std::vector<Candidate> &candidates, double random) const;
+    // A separately trained combat policy may prefer a party slot when two
+    // characters offer the same tactic. Never override an enemy-specific
+    // decision to try or use a DIFFERENT weapon/spell.
+    int select(const std::vector<Candidate> &candidates, double random,
+               int preferredPartySlot = -1) const;
     void learn(const Signature &signature, int observedDamage);
     Experience experience(const Signature &signature) const;
     uint64_t samples() const { return samples_; }

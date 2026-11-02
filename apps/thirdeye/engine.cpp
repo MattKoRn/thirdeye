@@ -1339,6 +1339,9 @@ void THIRDEYE::Engine::bootObject(RESOURCES::Resource &resource,
 			          << " -- quitting." << std::endl;
 			quit = true;
 		} catch (const THIRDEYE::runtime::NeuralRecovery &r) {
+			// The native game snapshot predates recent combats. Persist learned
+			// attack effectiveness and movement separately BEFORE rewinding it.
+			THIRDEYE::nn::mode::flushLearning();
 			if (THIRDEYE::nn::rolling::restore(r.slot, resource)) {
 				THIRDEYE::nn::mode::setActive(true);
 				THIRDEYE::nn::rolling::afterRestore();

@@ -16,6 +16,9 @@ namespace THIRDEYE::nn::combat {
 // weaknesses.ckpt independently stores per-enemy weapon and magic experiments.
 void initialize(const std::filesystem::path &path);
 void shutdown();
+// Save confirmed combat and weakness learning without shutting down the NN.
+// Called before native nn-1..nn-3 game-over restoration.
+void flushLearning();
 void cancel();
 bool waiting();
 void release(VM::EventSystem &events);

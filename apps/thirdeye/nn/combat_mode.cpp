@@ -276,9 +276,13 @@ void initialize(const std::filesystem::path &path) {
     }
 }
 
-void shutdown() {
+void flushLearning() {
     save(true);
     saveTactics(true);
+}
+
+void shutdown() {
+    flushLearning();
     g.pending.reset();
 }
 
@@ -336,6 +340,8 @@ void observe(VM::ObjectSystem &objects, const mode::Pose &pose, bool training) {
               << " success=" << (outcome->success ? "yes" : "no")
               << " rate=" << rate
               << " samples=" << g.brain.samples()
+              << " mean_reward=" << g.brain.meanReward()
+              << " success_rate=" << g.brain.successRate()
               << " checkpoint=" << checkpointStatus() << '\n';
 }
 
@@ -350,7 +356,16 @@ bool attack(VM::EventSystem &events, VM::ObjectSystem &objects,
                           features, allowed, candidates))
         return false;
     std::uniform_real_distribution<double> random(0.0, 1.0);
-    const int choice = g.weaknesses.select(candidates, random(g.rng));
+    // Both models learn from measured NPC HP changes. The enemy-specific UCB
+    // selector still explores distinct weapons/spells; the online combat
+    // policy chooses which party member should use equivalent equipment.
+    const int learnedAction = g.brain.select(
+        features, allowed, random(g.rng), random(g.rng));
+    const int preferredSlot = learnedAction >= 0 &&
+                              learnedAction < static_cast<int>(kPartySlots.size())
+        ? kPartySlots[static_cast<std::size_t>(learnedAction)] : -1;
+    const int choice = g.weaknesses.select(
+        candidates, random(g.rng), preferredSlot);
     if (choice < 0) return false;
     const int selectedSlot = candidates[static_cast<std::size_t>(choice)].partySlot;
     const auto it = std::find(kPartySlots.begin(), kPartySlots.end(), selectedSlot);
@@ -372,6 +387,7 @@ bool attack(VM::EventSystem &events, VM::ObjectSystem &objects,
               << " enemy_class=" << signature.enemy
               << " target=" << enemy->id << " hp=" << enemy->hp
               << " previous_trials=" << g.weaknesses.experience(signature).trials
+              << " policy_preferred_pc=" << preferredSlot
               << '\n';
     return true;
 }

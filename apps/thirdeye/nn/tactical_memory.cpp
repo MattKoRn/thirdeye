@@ -62,7 +62,8 @@ Experience Memory::experience(const Signature &s) const {
     return it == data_.end() ? Experience{} : it->second;
 }
 
-int Memory::select(const std::vector<Candidate> &candidates, double random) const {
+int Memory::select(const std::vector<Candidate> &candidates, double random,
+                   int preferredPartySlot) const {
     if (candidates.empty() || !std::isfinite(random) ||
         random < 0.0 || random > 1.0)
         return -1;
@@ -72,10 +73,23 @@ int Memory::select(const std::vector<Candidate> &candidates, double random) cons
     for (std::size_t i = 0; i < candidates.size(); ++i)
         if (experience(candidates[i].signature).trials == 0)
             untried.push_back(static_cast<int>(i));
+    // Per-enemy tactical evidence chooses the weapon/spell. The online combat
+    // policy breaks ties between party members wielding equivalent equipment:
+    // it has learned which attacker actually produced damage in this context.
+    const auto preferEquivalent = [&](int selected) {
+        if (selected < 0 || preferredPartySlot < 0) return selected;
+        for (std::size_t i = 0; i < candidates.size(); ++i) {
+            if (candidates[i].partySlot == preferredPartySlot &&
+                candidates[i].signature ==
+                    candidates[static_cast<std::size_t>(selected)].signature)
+                return static_cast<int>(i);
+        }
+        return selected;
+    };
     const auto pick = [&](std::size_t size) {
         return std::min(size - 1, static_cast<std::size_t>(random * size));
     };
-    if (!untried.empty()) return untried[pick(untried.size())];
+    if (!untried.empty()) return preferEquivalent(untried[pick(untried.size())]);
 
     uint64_t total = 0;
     for (const auto &candidate : candidates)
@@ -93,7 +107,7 @@ int Memory::select(const std::vector<Candidate> &candidates, double random) cons
             best = static_cast<int>(i);
         }
     }
-    return best;
+    return preferEquivalent(best);
 }
 
 void Memory::learn(const Signature &sig, int observedDamage) {
