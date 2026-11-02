@@ -85,6 +85,13 @@ its saves. The selected game folder can also be imported from ZIP/GOG Linux
 Dungeon Hack BIN/CUE images in MODE1/2352 format are converted to ISO before
 extraction. Original game data is NOT included in this repository.
 
+Eye of the Beholder III's DATA1.ARJ through DATA6.ARJ are decoded together
+using a standalone native ARJ extractor built from the launcher's existing
+decoder (methods 0-4 with CRC verification and multi-volume continuation).
+This avoids 7-Zip's "Unsupported Method : EYE.RES" error. 7-Zip is still
+used for ISO images. The decoder builds incrementally with the game engine;
+you do not need to enable or install the Qt launcher.
+
 Archive.org: pass --archive (or choose it interactively). The installer fetches
 the item's live metadata first, checks expected archive filenames, displays
 rights metadata, and downloads only after an explicit I AGREE declaration
