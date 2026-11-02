@@ -356,8 +356,12 @@ void observe(VM::ObjectSystem &objects, const mode::Pose &pose, bool training) {
         !objects.isSubclassOf(objects.classOf(p.npc), kNpcClass))
         return;
     const int hpAfter = word(objects, p.npc, kNpcClass, 3);
-    // Wait for delayed weapon and magic projectiles before declaring a miss.
-    if (hpAfter == p.hpBefore && p.observationTicks++ < 4) {
+    // Allow longer magic-projectile travel without slowing ordinary melee.
+    const bool magicalAttack =
+        p.signature.kind == tactics::Kind::ScrollSpell ||
+        p.signature.kind == tactics::Kind::WandSpell;
+    const int maxWaitTicks = magicalAttack ? 4 : 2;
+    if (hpAfter == p.hpBefore && p.observationTicks++ < maxWaitTicks) {
         g.pending = p;
         return;
     }
@@ -489,9 +493,6 @@ bool attack(VM::EventSystem &events, VM::ObjectSystem &objects,
     if (action < 0 || action >= static_cast<int>(kWeaponIcons.size()))
         return false;
     const auto &icon = kWeaponIcons[static_cast<std::size_t>(action)];
-    events.mouseMove(icon[0], icon[1]);
-    events.mouseButton(false, true);
-    g.mouseDown = true;
     const auto signature = candidates[static_cast<std::size_t>(choice)].signature;
     const int kernel = objects.firstObjectOfClass(kKernelClass);
     const int caster = kernel >= 0
@@ -501,6 +502,10 @@ bool attack(VM::EventSystem &events, VM::ObjectSystem &objects,
     const int chargesBefore =
         signature.kind == tactics::Kind::WandSpell && item >= 0
         ? exportedCharges(objects, item, signature.itemClass) : -1;
+    // Capture the baseline before changing the event system's button state.
+    events.mouseMove(icon[0], icon[1]);
+    events.mouseButton(false, true);
+    g.mouseDown = true;
     g.pending = Pending{features, pose, action, enemy->id, enemy->hp,
                         signature, 0, caster, item, chargesBefore};
     std::cout << "[nn] combat experiment="
