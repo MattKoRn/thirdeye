@@ -22,6 +22,11 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 namespace THIRDEYE::runtime::eye {
 
 // Savegame-picker slot-name buffer. The SOP picker passes whatever
@@ -408,9 +413,16 @@ struct StagedCommit {
 	bool commit() {
 		bool all = true;
 		for (const auto &[s, f] : files) {
+#ifdef _WIN32
+			// rename() cannot overwrite an existing backup on Windows.
+			if (!MoveFileExW(s.c_str(), f.c_str(),
+			                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+				all = false;
+#else
 			std::error_code ec;
 			std::filesystem::rename(s, f, ec);
-			if (ec) all = false; // same-dir rename; failure here is exotic
+			if (ec) all = false;
+#endif
 		}
 		return all;
 	}
@@ -617,12 +629,20 @@ bool tryHandle(Context &ctx, const std::string &fn,
 	if (fn == "write_save_directory") {
 		auto path = ctx.res.resourcePath().parent_path() / "SAVEGAME" /
 		            "SAVEGAME.DIR";
+		const auto oldNames = THIRDEYE::savegame::loadSaveDir(path);
 		std::ofstream out(path, std::ios::binary | std::ios::trunc);
-		constexpr int kDirSlots = 12; // NUM_SAVEGAMES
+		const int kDirSlots = std::min(kSaveSlots,
+		    std::max(15, static_cast<int>(oldNames.size()))); // preserve tail
 		if (out) {
 			for (int s = 0; s < kDirSlots; ++s) {
 				const uint8_t *p = gSlotNameBuf + s * kSlotNameLen;
-				if (p[0] != 0) {
+				if (s >= 12) {
+					if (static_cast<size_t>(s) < oldNames.size() &&
+					    oldNames[s].used)
+						out << oldNames[s].name;
+					else
+						out << "__________________________";
+				} else if (p[0] != 0) {
 					// strnlen: the SOP's copy_string writes these slots in
 					// place and can fill all kSlotNameLen bytes w/o a NUL.
 					out.write(reinterpret_cast<const char *>(p),

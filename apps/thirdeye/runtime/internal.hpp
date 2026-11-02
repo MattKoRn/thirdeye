@@ -39,6 +39,9 @@ namespace THIRDEYE::runtime {
 // the catch site doesn't misreport them as "Window closed".
 struct QuitRequested { std::string reason; };
 
+// Unwind the VM fully before restoring a native EOB3 save.
+struct NeuralRecovery { int slot; };
+
 // Thrown by `launch` to model AESOP's program chain. In the original, launch()
 // exec-replaces the process with a sub-program (cine.exe/chgen.exe); when that
 // finishes it chain-launches "aesop eye start" again, which re-reads the mode
@@ -129,7 +132,8 @@ uint8_t *staticBytePtr(Context &ctx, VM::Value addr, uint32_t size);
 // and lvlmap; render() reads FONT8 -- so we plumb them through the seam
 // rather than smuggling globals.
 void pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &events,
-              VM::ObjectSystem &objects, RESOURCES::Resource &res);
+              VM::ObjectSystem &objects, RESOURCES::Resource &res,
+              Context *ctx = nullptr);
 
 // True while any UI screen is up instead of the 3D adventure view: the
 // kernel's W:current_screen@265 (spell book, character sheet, ...) or the

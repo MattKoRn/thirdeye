@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 #include "../thirdeye/nn/online_mode.hpp"
+#include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
 #include <algorithm>
@@ -170,4 +171,75 @@ TEST(nnMode, CombatRewardDependsOnObservedDamageNotClickedButton) {
     EXPECT_FALSE(mode::evaluateCombatOutcome(18, 20)); // healing/another NPC
     EXPECT_FALSE(mode::evaluateCombatOutcome(18, -1)); // missing reading
     EXPECT_FALSE(mode::evaluateCombatOutcome(0, 0)); // already dead
+}
+
+TEST(nnRollingSave, OneMinuteIntervalsNoBurstWhenReturningFromPause) {
+    THIRDEYE::nn::rolling::Schedule clock;
+    using Schedule = THIRDEYE::nn::rolling::Schedule;
+    const auto t = Schedule::Time{};
+    const auto alive = Schedule::Party::Alive;
+    clock.enable(t);
+    EXPECT_FALSE(clock.shouldSave(t + std::chrono::seconds(59), true, alive));
+    EXPECT_FALSE(clock.shouldSave(t + std::chrono::seconds(60), false, alive));
+    EXPECT_TRUE(clock.shouldSave(t + std::chrono::seconds(70), true, alive));
+    EXPECT_FALSE(clock.shouldSave(t + std::chrono::seconds(70), true, alive));
+    EXPECT_FALSE(clock.shouldSave(t + std::chrono::seconds(129), true, alive));
+    EXPECT_TRUE(clock.shouldSave(t + std::chrono::seconds(130), true, alive));
+    clock.disable();
+    EXPECT_FALSE(clock.shouldSave(t + std::chrono::minutes(10), true, alive));
+}
+
+TEST(nnRollingSave, GameOverLoadsAfterExactlyFiveSecondsNotBefore) {
+    using Schedule = THIRDEYE::nn::rolling::Schedule;
+    Schedule clock;
+    const auto t = Schedule::Time{};
+    clock.enable(t);
+    EXPECT_FALSE(clock.shouldRestore(t + std::chrono::seconds(10),
+                                     Schedule::Party::Alive));
+    EXPECT_FALSE(clock.shouldRestore(t + std::chrono::seconds(20),
+                                     Schedule::Party::Dead));
+    EXPECT_TRUE(clock.gameOverPending());
+    // The character objects may disappear when the game-over screen opens.
+    EXPECT_FALSE(clock.shouldRestore(t + std::chrono::seconds(24),
+                                     Schedule::Party::Unknown));
+    EXPECT_TRUE(clock.shouldRestore(t + std::chrono::seconds(25),
+                                    Schedule::Party::Unknown));
+    clock.afterRestore(t + std::chrono::seconds(25));
+    EXPECT_FALSE(clock.gameOverPending());
+    EXPECT_FALSE(clock.shouldSave(t + std::chrono::seconds(84), true,
+                                  Schedule::Party::Alive));
+    EXPECT_TRUE(clock.shouldSave(t + std::chrono::seconds(85), true,
+                                 Schedule::Party::Alive));
+}
+
+TEST(nnRollingSave, ARevivedPartyCancelsTheGameOverCountdown) {
+    using Schedule = THIRDEYE::nn::rolling::Schedule;
+    Schedule clock;
+    const auto t = Schedule::Time{};
+    clock.enable(t);
+    EXPECT_FALSE(clock.shouldRestore(t, Schedule::Party::Dead));
+    EXPECT_FALSE(clock.shouldRestore(t + std::chrono::seconds(3),
+                                     Schedule::Party::Alive));
+    EXPECT_FALSE(clock.gameOverPending());
+    EXPECT_FALSE(clock.shouldRestore(t + std::chrono::seconds(5),
+                                     Schedule::Party::Dead));
+    EXPECT_FALSE(clock.shouldRestore(t + std::chrono::seconds(9),
+                                     Schedule::Party::Unknown));
+    EXPECT_TRUE(clock.shouldRestore(t + std::chrono::seconds(10),
+                                    Schedule::Party::Dead));
+    clock.disable();
+    EXPECT_FALSE(clock.shouldRestore(t + std::chrono::seconds(20),
+                                     Schedule::Party::Dead));
+}
+
+TEST(nnRollingSave, NamesAndReservedSlotsAreStable) {
+    using namespace THIRDEYE::nn::rolling;
+    EXPECT_EQ(slotForIndex(0), 12);
+    EXPECT_EQ(slotForIndex(1), 13);
+    EXPECT_EQ(slotForIndex(2), 14);
+    EXPECT_STREQ(nameForIndex(0), "nn-1");
+    EXPECT_STREQ(nameForIndex(1), "nn-2");
+    EXPECT_STREQ(nameForIndex(2), "nn-3");
+    for (int index = 0; index < kSaveCount; ++index)
+        EXPECT_EQ(indexForSlot(slotForIndex(index)), index);
 }

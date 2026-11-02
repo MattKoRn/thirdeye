@@ -284,6 +284,37 @@ pattern.
 3. `dump`: **path-only**; the agent reads the BMP itself.
 
 
+## Neural in-game rolling saves and game-over recovery
+
+While **F1 neural AUTO** is enabled in **Eye of the Beholder 3**, the host
+calls the game's existing native `save_game(slot, level)` routine every
+60 seconds of monotonic elapsed time (rather than counting frames). Saves
+wait for the actual dungeon view, a valid current level, and at least one
+living party member. A long UI/menu pause does not trigger a burst of saves.
+The three rotating backups are named **nn-1**, **nn-2**, **nn-3**, backed by
+native EOB3 slots **12, 13, 14** (`SAVEGAME/ITEMS_12.BIN`, `LVLxx_12.BIN`,
+and similarly 13/14). These slots are outside the normal 12-slot picker, so
+ordinary player save slots 0..11 are never overwritten. Names appear in
+`SAVEGAME.DIR` entries 12..14 and survive a regular manual save.
+
+On a game-over detected from **all registered party members having zero or
+negative HP**, a five-second timer starts; disappearance of the kernel during
+the death screen does not cancel it. If a party member becomes alive again,
+the countdown is cancelled. At five seconds the host selects the newest
+named, structurally present backup containing a **living** party, restores
+the native ITEMS/LVL backup files and automap, resets SOP VM instances and
+event windows, and resumes the normal EOB3 continue-game boot, leaving neural
+AUTO enabled. If no healthy NN save exists, recovery is not attempted and a
+single diagnostic is emitted. Corrupt/missing/unrelated slots are never
+promoted to a recommended save. Console logs show successful `nn-N`
+rotations and recovery.
+
+**Current scope:** EOB3 only. Dungeon Hack uses a different savegame
+implementation; the native EOB3 save/restore format must not be applied to
+`HACK.RES`. Also, a scripted game-over with living party HP is not detected
+by this first version. The three named saves are real **game-state** saves,
+separate from neural policy checkpoints in `Documents/ThirdeyeNN`.
+
 ## Self-learning neural movement (F1)
 
 The neural controller does **not** learn from the player's movement keys or

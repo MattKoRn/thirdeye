@@ -2,6 +2,7 @@
 #include "automap.hpp"
 #include "control.hpp"
 #include "nn/online_mode.hpp"
+#include "nn/rolling_save.hpp"
 #include "resources/res.hpp"
 #include "resources/gffi.hpp"
 #include "sound/sound.hpp"
@@ -328,7 +329,8 @@ InputRecorder gRecorder;
 // frame-paced loop and makes the window render live (instead of only after the
 // loop ends). Throws QuitRequested on window-close / ESC.
 void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &events,
-                                 VM::ObjectSystem &objects, RESOURCES::Resource &res) {
+                                 VM::ObjectSystem &objects, RESOURCES::Resource &res,
+                                 Context *ctx) {
 	// THIRDEYE_RECORD: arm the input recorder (see InputRecorder above) and
 	// advance its pump clock BEFORE polling, so input seen this pump gets this
 	// pump's tick.
@@ -599,9 +601,15 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	}
 	// Live control channel: polled here so a client's inject/dump lands in
 	// the same pump slot AUTOWALK would use. No-op when THIRDEYE_CTL unset.
-	THIRDEYE::nn::mode::pump(events, objects,
-		THIRDEYE::runtime::uiScreenActive(objects),
-		!THIRDEYE::runtime::gDungeonHack);
+	const bool gameplay = !THIRDEYE::runtime::uiScreenActive(objects);
+	const bool eob3 = !THIRDEYE::runtime::gDungeonHack;
+	const bool dead = eob3 &&
+	    THIRDEYE::nn::rolling::partyState(objects) ==
+	        THIRDEYE::nn::rolling::Schedule::Party::Dead;
+	THIRDEYE::nn::mode::pump(events, objects, !gameplay || dead, eob3);
+	if (ctx && eob3)
+		THIRDEYE::nn::rolling::tick(*ctx, THIRDEYE::nn::mode::active(),
+		                            gameplay && !dead);
 	THIRDEYE::control::pump(&gfx, events, objects);
 	// Debug: THIRDEYE_AUTOKEY=<decimal SDL scancode> pushes a synthetic key-down
 	// with that physical scancode every ~40 pumps, so the real key handler (WASD/QE/
@@ -1329,6 +1337,19 @@ void THIRDEYE::Engine::bootObject(RESOURCES::Resource &resource,
 		} catch (const QuitRequested &q) {
 			std::cout << "\n" << (q.reason.empty() ? "Window closed" : q.reason)
 			          << " -- quitting." << std::endl;
+			quit = true;
+		} catch (const THIRDEYE::runtime::NeuralRecovery &r) {
+			if (THIRDEYE::nn::rolling::restore(r.slot, resource)) {
+				THIRDEYE::nn::mode::setActive(true);
+				THIRDEYE::nn::rolling::afterRestore();
+				objects.resetInstances();
+				events.reset();
+				mem.insert_or_assign(1264, MODE_CINE);
+				std::cout << "[nn] recovered native slot " << r.slot
+				          << "; resuming autonomous gameplay" << std::endl;
+				continue;
+			}
+			std::cerr << "[nn] recovery failed; refusing partial restore" << std::endl;
 			quit = true;
 		} catch (const Relaunch &r) {
 			relaunch = r.program.empty() ? " " : r.program; // mark for handling
