@@ -1514,6 +1514,16 @@ void THIRDEYE::Engine::playCinematic(GRAPHICS::Graphics *gfx,
 		SDL_Event event;
 		while (gfx->isVideoPlaying()) {
 			while (SDL_PollEvent(&event)) {
+				if (event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+					SDL_SetWindowBordered(gfx->getWindow(), true);
+					continue;
+				}
+				if (event.type == SDL_EVENT_KEY_DOWN &&
+				    event.key.scancode == SDL_SCANCODE_F11) {
+					if (!event.key.repeat)
+						gfx->toggleFullscreen();
+					continue;
+				}
 				if (event.type == SDL_EVENT_QUIT) {
 					gfx->stopVideo();
 					mixer.stopMusic();
@@ -1557,11 +1567,19 @@ void THIRDEYE::Engine::handleBootWall(const VM::VmError &e,
 		bool done = false;
 		SDL_Event event;
 		while (!done) {
-			while (SDL_PollEvent(&event))
-				if (event.type == SDL_EVENT_QUIT ||
-				    (event.type == SDL_EVENT_KEY_DOWN &&
-				     event.key.key == SDLK_ESCAPE))
+			while (SDL_PollEvent(&event)) {
+				if (event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+					SDL_SetWindowBordered(gfx->getWindow(), true);
+				} else if (event.type == SDL_EVENT_KEY_DOWN &&
+				           event.key.scancode == SDL_SCANCODE_F11) {
+					if (!event.key.repeat)
+						gfx->toggleFullscreen();
+				} else if (event.type == SDL_EVENT_QUIT ||
+				           (event.type == SDL_EVENT_KEY_DOWN &&
+				            event.key.key == SDLK_ESCAPE)) {
 					done = true;
+				}
+			}
 			gfx->update();
 			SDL_Delay(16);
 		}
