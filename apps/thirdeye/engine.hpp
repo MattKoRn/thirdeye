@@ -50,6 +50,7 @@ class Engine
 	bool mChargenTest = false; // --chargen-test: run chargen entry screen in isolation
 	int  mLoadSave = -1;     // --load-save=N: restore slot N at boot, enter the game
 	bool mRenderer;
+	bool mWindowed = false; // desktop borderless fullscreen is default
 	uint8_t mGame;
 	uint16_t mScale;
 	std::filesystem::path mGameData;
@@ -85,6 +86,7 @@ public:
 	void setDebugMode(bool debug);
 	void setSoundUsage(bool nosound);
 	void setRenderer(bool renderer);
+	void setWindowed(bool windowed);
 	void setScale(uint16_t);
 private:
 	/// Resolve the game-data path (which may be a directory or a direct .RES
