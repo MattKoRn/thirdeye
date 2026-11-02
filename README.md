@@ -32,6 +32,60 @@ on disk throughout.
 * Crash-safe saving: save files are staged and committed atomically as a set,
   so a crash or full disk mid-save can't corrupt an existing slot.
 
+
+AUTOMATED INSTALLER (SOURCE CHECKOUT)
+-------------------------------------
+Linux and macOS:
+
+    sh scripts/install.sh
+
+Windows PowerShell:
+
+    powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+
+The installer builds the C++ engine in build/installer using CMake, installs
+it under the current user's app-data directory, and creates a desktop shortcut
+for Eye of the Beholder III or Dungeon Hack. It auto-installs prerequisites on
+Debian/Ubuntu (apt), macOS (Homebrew), or Windows (winget + MSVC + vcpkg).
+On Linux, SDL3 development packages require a sufficiently recent distribution
+(e.g. Ubuntu 25.04 or newer). Windows may require an elevated package-manager
+prompt; reopen your terminal if winget has just installed Git or CMake.
+
+The installer is independent of the optional Qt launcher: desktop shortcuts
+directly launch the game engine with --game=eob3 or --game=hack, so both games
+work even when Qt is not installed. Both games are detected using EYE.RES and
+HACK.RES respectively (Dungeon Hack also commonly includes OPEN.RES). User
+save data is never silently overwritten.
+
+Noninteractive game/source selection examples:
+
+    sh scripts/install.sh --game eob3 --source "$HOME/Games/EOB3"
+    sh scripts/install.sh --game hack --source "$HOME/Downloads/dungeonhack.zip"
+    sh scripts/install.sh --game skip
+
+    .\scripts\install.ps1 -Game hack -Source 'C:\Games\DUNGEON HACK'
+    .\scripts\install.ps1 -Game skip
+
+A game choice of skip reuses an existing detected installation and preserves
+its saves. The selected game folder can also be imported from ZIP/GOG Linux
+.sh, ISO/BIN CD image or ARJ files; extraction of ISO/ARJ needs 7-Zip.
+Dungeon Hack BIN/CUE images in MODE1/2352 format are converted to ISO before
+extraction. Original game data is NOT included in this repository.
+
+Archive.org: pass --archive (or choose it interactively). The installer fetches
+the item's live metadata first, checks expected archive filenames, displays
+rights metadata, and downloads only after an explicit I AGREE declaration
+that you have the legal right to obtain the files. Archive.org uploads and
+abandonware labels are NOT evidence of a redistribution license; use a copy
+you legitimately own if in doubt. Internet Archive files and formats may
+change; failed extraction tells you to import a working installed directory.
+
+To use existing dependencies without running the package manager, add
+--no-deps. The installer's optional self-tests need no compiler or game files:
+
+    python3 -m unittest discover -s scripts/tests -v
+
+
 BUILDING
 
 Thirdeye is built with CMake and a C++20 toolchain.
