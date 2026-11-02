@@ -1,6 +1,7 @@
 #include "online_mode.hpp"
 #include "combat_mode.hpp"
 #include "online_policy.hpp"
+#include "spell_probe.hpp"
 
 #include "../vm/events.hpp"
 #include "../vm/objects.hpp"
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -23,6 +25,8 @@ namespace {
 
 constexpr uint16_t kKernelClass = 1382;
 constexpr uint16_t kDungeonClass = 1381;
+constexpr uint16_t kPcClass = 1369;
+constexpr uint16_t kMagicClass = 2377;
 constexpr uint64_t kAutoSaveInterval = 32;
 constexpr std::array<const char *, OnlinePolicy::kActions> kActionNames{
     "forward", "back", "strafe-left", "strafe-right", "turn-left", "turn-right"
@@ -49,6 +53,16 @@ struct State {
     std::optional<Pose> failurePose;
     std::array<bool, OnlinePolicy::kActions> failedActions{};
     std::unordered_set<uint32_t> visited;
+    spell::Probe spellProbe;
+    int spellCaster = -1;
+    int spellSlot = -1;
+    int spellType = -1;
+    int spellPreparedBefore = -1;
+    uint32_t spellEffectsBefore = 0;
+    struct SpellBaseline {
+        int pc = -1, mage = -1, cleric = -1;
+        uint32_t effects = 0;
+    } spellBaselines[6];
     std::mt19937 rng{std::random_device{}()};
 };
 State g;
@@ -128,6 +142,104 @@ bool context(VM::ObjectSystem &objects, OnlinePolicy::Features &features,
     features = OnlinePolicy::features(x, y, dir, blocked);
     if (pose) *pose = {x, y, dir, readField(objects, kernel, kKernelClass, 246)};
     return true;
+}
+
+// Native SOP statics documented by runtime/eye.cpp and internal.cpp.
+int readWord(VM::ObjectSystem &objects, int obj, uint16_t cls, uint32_t offset) {
+    if (obj < 0) return -1;
+    try {
+        if (auto *p = objects.classStaticPtr(obj, cls, offset, 2))
+            return static_cast<int16_t>(static_cast<uint16_t>(p[0] | (p[1] << 8)));
+    } catch (const std::exception &) {}
+    return -1;
+}
+
+int spellScreen(VM::ObjectSystem &objects) {
+    const int kernel = objects.firstObjectOfClass(kKernelClass);
+    return readWord(objects, kernel, kKernelClass, 265);
+}
+
+struct SpellStock {
+    int pc = -1, mage = -1, cleric = -1;
+    uint32_t effects = 0;
+    bool valid = false;
+};
+
+SpellStock spellStock(VM::ObjectSystem &objects, int partySlot) {
+    SpellStock result;
+    if (partySlot < 0 || partySlot >= 6) return result;
+    const int kernel = objects.firstObjectOfClass(kKernelClass);
+    if (kernel < 0) return result;
+    const int pc = readWord(objects, kernel, kKernelClass, 229 + partySlot * 2);
+    if (pc < 0 || objects.classOf(pc) == 0xffff ||
+        !objects.isSubclassOf(objects.classOf(pc), kPcClass))
+        return result;
+    try {
+        auto *counter = objects.classStaticPtr(pc, kPcClass, 209, 200);
+        auto *effect = objects.classStaticPtr(pc, kPcClass, 199, 4);
+        if (!counter || !effect) return result;
+        std::array<uint8_t, 200> counts{};
+        std::copy_n(counter, counts.size(), counts.begin());
+        result.pc = pc;
+        result.mage = spell::available(counts, 0);
+        result.cleric = spell::available(counts, 1);
+        result.effects = static_cast<uint32_t>(effect[0]) |
+            (static_cast<uint32_t>(effect[1]) << 8) |
+            (static_cast<uint32_t>(effect[2]) << 16) |
+            (static_cast<uint32_t>(effect[3]) << 24);
+        result.valid = result.mage >= 0 && result.cleric >= 0;
+    } catch (const std::exception &) {}
+    return result;
+}
+
+void observeSpellStock(VM::ObjectSystem &objects) {
+    for (int slot = 0; slot < 6; ++slot) {
+        const auto current = spellStock(objects, slot);
+        auto &prev = g.spellBaselines[slot];
+        if (!current.valid) { prev = {}; continue; }
+        if (prev.pc == current.pc &&
+            (prev.mage != current.mage || prev.cleric != current.cleric ||
+             prev.effects != current.effects)) {
+            std::cout << "[nn] spell-state observed slot=" << slot
+                      << " mage_available=" << current.mage
+                      << " mage_delta=" << current.mage - prev.mage
+                      << " cleric_available=" << current.cleric
+                      << " cleric_delta=" << current.cleric - prev.cleric
+                      << " effects_before=" << prev.effects
+                      << " effects_after=" << current.effects
+                      << " attributed_cast=no trained=no\n";
+        }
+        prev = {current.pc, current.mage, current.cleric, current.effects};
+    }
+}
+
+void closeSpellProbe(VM::ObjectSystem &objects) {
+    const int magic = objects.firstObjectOfClass(kMagicClass);
+    if (magic < 0) {
+        g.spellProbe.fail();
+        std::cerr << "[nn] spell probe cannot close: missing magic singleton\n";
+        return;
+    }
+    try {
+        objects.send(magic, 172, {}); // confirmed magic.deactivate
+        g.spellProbe.closed(spellScreen(objects));
+    } catch (const std::exception &e) {
+        g.spellProbe.fail();
+        std::cerr << "[nn] spell probe close failed: " << e.what() << '\n';
+        return;
+    }
+    const auto after = spellStock(objects, g.spellSlot);
+    std::cout << "[nn] spell probe=" << g.spellProbe.status()
+              << " slot=" << g.spellSlot
+              << " type=" << (g.spellType ? "cleric" : "mage")
+              << " open_screen=" << g.spellProbe.openedScreen()
+              << " closed_screen=" << g.spellProbe.closedScreen()
+              << " available_before=" << g.spellPreparedBefore
+              << " available_after=" << (after.valid
+                  ? (g.spellType ? after.cleric : after.mage) : -1)
+              << " effects_before=" << g.spellEffectsBefore
+              << " effects_after=" << (after.valid ? after.effects : 0)
+              << " cast=no trained=no\n";
 }
 
 bool canMove(int action, const std::array<bool, 4> &blocked) {
@@ -212,6 +324,9 @@ void setActive(bool enabled) {
     g.pending.reset();
     g.failurePose.reset();
     g.failedActions.fill(false);
+    for (auto &value : g.spellBaselines) value = {};
+    if (g.spellProbe.shouldOpen()) g.spellProbe.fail();
+    // A probe that already opened must still run native close on next pump.
 }
 
 bool toggle() {
@@ -221,6 +336,50 @@ bool toggle() {
 
 bool consumesManualKey(int32_t code) {
     return active() && OnlinePolicy::actionForKey(code) >= 0;
+}
+
+const char *spellProbeStatus() { return g.spellProbe.status(); }
+
+std::string spellStockStatus(VM::ObjectSystem &objects, int slot) {
+    const auto stock = spellStock(objects, slot);
+    if (!stock.valid) return "err spell counters unavailable for party slot\n";
+    return "nn spell slot=" + std::to_string(slot) +
+           " pc=" + std::to_string(stock.pc) +
+           " mage_available=" + std::to_string(stock.mage) +
+           " cleric_available=" + std::to_string(stock.cleric) +
+           " effects=" + std::to_string(stock.effects) +
+           " screen=" + std::to_string(spellScreen(objects)) +
+           " probe=" + g.spellProbe.status() + "\nok\n";
+}
+
+bool queueSpellProbe(VM::ObjectSystem &objects, int slot, int type,
+                     std::string &error) {
+    error.clear();
+    if (!g.autonomous) { error = "enable nn auto first"; return false; }
+    if (g.spellProbe.busy()) { error = "spell probe busy"; return false; }
+    if (slot < 0 || slot >= 6 || (type != 0 && type != 1)) {
+        error = "invalid party slot/type"; return false;
+    }
+    if (spellScreen(objects) != 0) {
+        error = "spell probe needs normal gameplay screen"; return false;
+    }
+    if (objects.firstObjectOfClass(kMagicClass) < 0) {
+        error = "EOB3 magic singleton not present"; return false;
+    }
+    const auto stock = spellStock(objects, slot);
+    if (!stock.valid || readWord(objects, stock.pc, kPcClass, 171) <= 0) {
+        error = "caster unavailable or not alive"; return false;
+    }
+    const int prepared = type == 0 ? stock.mage : stock.cleric;
+    if (!g.spellProbe.begin(0, prepared)) {
+        error = "no prepared spell counters for requested type"; return false;
+    }
+    g.spellSlot = slot;
+    g.spellCaster = stock.pc;
+    g.spellType = type;
+    g.spellPreparedBefore = prepared;
+    g.spellEffectsBefore = stock.effects;
+    return true;
 }
 
 void setTraining(bool enabled) { g.trainingEnabled = enabled; }
@@ -266,6 +425,17 @@ bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
 void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
           bool uiActive, bool eob3) {
     combat::release(events); // always release pending click on next host pump
+    if (g.spellProbe.shouldClose()) {
+        closeSpellProbe(objects); // close even if autonomy toggled off or UI is up
+        combat::cancel();
+        g.pending.reset();
+        g.pacer.reset(ActionPacer::Clock::now());
+        return;
+    }
+    if (!eob3 && g.spellProbe.shouldOpen()) {
+        g.spellProbe.fail(); // never send EOB3 magic messages to Dungeon Hack
+    }
+    if (eob3 && g.autonomous && !uiActive) observeSpellStock(objects);
     // Never interpret changes caused by menus or manual control as rewards.
     if (!g.autonomous || uiActive) {
         combat::cancel();
@@ -334,6 +504,33 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         }
     }
 
+    if (g.spellProbe.shouldOpen()) {
+        // The existing runtime spellmenu probe verifies M:29 and M:172.
+        // M:54 has no confirmed memorized spell ID; do not synthesize a cast.
+        const int magic = objects.firstObjectOfClass(kMagicClass);
+        const auto stock = spellStock(objects, g.spellSlot);
+        if (!eob3 || magic < 0 || !stock.valid ||
+            stock.pc != g.spellCaster ||
+            (g.spellType == 0 ? stock.mage : stock.cleric) <= 0) {
+            g.spellProbe.fail();
+        } else {
+            try {
+                objects.send(magic, 29, {g.spellCaster, g.spellType});
+                g.spellProbe.opened(spellScreen(objects));
+                std::cout << "[nn] spell probe opened slot=" << g.spellSlot
+                          << " type=" << (g.spellType ? "cleric" : "mage")
+                          << " screen=" << g.spellProbe.openedScreen()
+                          << " prepared=" << g.spellPreparedBefore
+                          << " native_message=29 cast=no\n";
+            } catch (const std::exception &e) {
+                g.spellProbe.fail();
+                std::cerr << "[nn] spell probe open failed: " << e.what() << '\n';
+            }
+        }
+        g.pacer.reset(ActionPacer::Clock::now());
+        return;
+    }
+
     // First live combat interaction: attack a verified front-cell monster.
     // No invented keyboard attack codes; actual EOB3 weapon hit regions.
     if (eob3 && combat::attack(events, objects, current, blocked))
@@ -374,6 +571,7 @@ bool loadFrom(const std::filesystem::path &path, std::string &error) {
     initialize();
     if (!g.brain.load(path, error)) return false;
     combat::cancel();
+    if (g.spellProbe.shouldOpen()) g.spellProbe.fail();
     // Do not train the imported weights on feedback from a pre-import action.
     g.pending.reset();
     g.failurePose.reset();
