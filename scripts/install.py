@@ -81,6 +81,35 @@ def app_root(kind):
     return Path(os.environ.get("XDG_DATA_HOME", str(home / ".local/share"))) / "thirdeye"
 
 
+def winget_installed(package):
+    """Check winget's installed packages even when the executable is off PATH."""
+    result = subprocess.run(
+        ["winget", "list", "--id", package, "-e", "--accept-source-agreements"],
+        capture_output=True, text=True, check=False)
+    # Some winget versions return success with a "no packages found" message.
+    # Match the exact package ID in the results, not the command arguments.
+    pattern = r"(?<![A-Za-z0-9_.-])" + re.escape(package) + r"(?![A-Za-z0-9_.-])"
+    return result.returncode == 0 and bool(re.search(pattern, result.stdout, re.I))
+
+
+def winget_install_if_missing(package):
+    """Avoid winget's nonzero 'already installed; no update' result."""
+    if winget_installed(package):
+        info("Already installed (winget): " + package + "; skipping.")
+        return
+    command = ["winget", "install", "--id", package, "-e",
+               "--accept-package-agreements", "--accept-source-agreements"]
+    try:
+        run(command)
+    except subprocess.CalledProcessError:
+        # Another installer may have installed it after our initial check, or
+        # winget may have reported an already-installed package as a failure.
+        # Never ignore an error unless the package can actually be verified.
+        if not winget_installed(package):
+            raise
+        info("Confirmed installed after winget returned an error: " + package)
+
+
 def ensure_dependencies(kind):
     """Provision platform prerequisites with the native package manager."""
     if kind == "linux":
@@ -105,9 +134,13 @@ def ensure_dependencies(kind):
             fail("Windows App Installer (winget) is needed for automatic setup.")
         for cmd, package in (("git", "Git.Git"), ("cmake", "Kitware.CMake"),
                              ("ninja", "Ninja-build.Ninja"), ("7z", "7zip.7zip")):
-            if not shutil.which(cmd):
-                run(["winget", "install", "--id", package, "-e",
-                     "--accept-package-agreements", "--accept-source-agreements"])
+            # 7-Zip normally installs to Program Files without adding 7z.exe
+            # to PATH; treat that as installed instead of trying an upgrade.
+            installed_executable = seven_zip() if cmd == "7z" else shutil.which(cmd)
+            if installed_executable:
+                info("Already available: " + cmd + "; skipping.")
+            else:
+                winget_install_if_missing(package)
         vswhere = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio/Installer/vswhere.exe"
         has_vs = vswhere.is_file() and subprocess.run(
             [str(vswhere), "-latest", "-products", "*", "-requires",
