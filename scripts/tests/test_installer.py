@@ -201,6 +201,19 @@ class InstallerTests(unittest.TestCase):
                 get.call_args.args[0].headers["Range"],
                 "bytes={}-".format(len(b"partial old data")))
 
+    def test_corrupt_full_length_part_restarts_without_range(self):
+        contents = sample_zip_file()
+        meta = archive_file_info("EOB3_Disk4.zip", contents)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            (cache / "EOB3_Disk4.zip.part").write_bytes(b"x" * len(contents))
+            with patch.object(install.urllib.request, "urlopen",
+                              return_value=FakeDownloadResponse(contents)) as get:
+                target = install.archive_download_file(
+                    "eye-of-the-beholder-3", meta, cache)
+            self.assertEqual(target.read_bytes(), contents)
+            self.assertNotIn("Range", get.call_args.args[0].headers)
+
     def test_archive_http_403_is_not_retried(self):
         contents = sample_zip_file()
         meta = archive_file_info("EOB3_Disk4.zip", contents)
