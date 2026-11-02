@@ -163,7 +163,7 @@ std::string handle(const std::vector<std::string> &tok,
     // The same brain is shared with F1 gameplay mode on every platform.
     if (verb == "nn") {
         if (tok.size() < 2)
-            return "err nn <status|teach|train|predict|step|auto|save|load>\n";
+            return "err nn <status|teach|train|predict|step|auto|save|load|spell>\n";
         const std::string &sub = tok[1];
         if (sub == "status" && tok.size() == 2)
             return "nn samples=" + std::to_string(nn::mode::samples()) +
@@ -178,12 +178,33 @@ std::string handle(const std::vector<std::string> &tok,
                    " tactic_samples=" + std::to_string(nn::mode::tacticalSamples()) +
                    " enemy_tactics=" + std::to_string(nn::mode::knownWeaknesses()) +
                    " tactic_checkpoint=" + nn::mode::tacticalCheckpointStatus() +
+                   " spell_probe=" + nn::mode::spellProbeStatus() +
                    " self_train=" + (nn::mode::training() ? "on" : "off") +
                    " auto=" + (nn::mode::active() ? "on" : "off") + "\nok\n";
         if (sub == "train" && tok.size() == 3 &&
             (tok[2] == "on" || tok[2] == "off")) {
             nn::mode::setTraining(tok[2] == "on");
             return "ok\n";
+        }
+        if (sub == "spell") {
+            if (tok.size() == 4 && tok[2] == "status") {
+                int slot = -1;
+                if (!parseInt(tok[3], slot) || slot < 0 || slot >= 6)
+                    return "err nn spell status <party-slot-0..5>\n";
+                return nn::mode::spellStockStatus(objects, slot);
+            }
+            if (tok.size() == 5 && tok[2] == "probe") {
+                int slot = -1;
+                if (!parseInt(tok[3], slot) || slot < 0 || slot >= 6 ||
+                    (tok[4] != "mage" && tok[4] != "cleric"))
+                    return "err nn spell probe <party-slot-0..5> <mage|cleric>\n";
+                std::string error;
+                if (!nn::mode::queueSpellProbe(
+                        objects, slot, tok[4] == "mage" ? 0 : 1, error))
+                    return "err " + error + "\n";
+                return "nn spell probe queued; use nn status for progress\nok\n";
+            }
+            return "err nn spell <status slot|probe slot mage|cleric>\n";
         }
         if (sub == "teach")
             return "err neural mode learns from its own action outcomes, not player demonstrations\n";
@@ -216,7 +237,7 @@ std::string handle(const std::vector<std::string> &tok,
             return "nn checkpoint loaded samples=" +
                    std::to_string(nn::mode::samples()) + "\nok\n";
         }
-        return "err nn <status|teach|train|predict|step|auto|save|load>\n";
+        return "err nn <status|teach|train|predict|step|auto|save|load|spell>\n";
     }
 
     if (verb == "ping") return "ok\n";
