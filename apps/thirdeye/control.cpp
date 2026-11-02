@@ -175,6 +175,9 @@ std::string handle(const std::vector<std::string> &tok,
                    " combat_reward=" + std::to_string(nn::mode::combatMeanReward()) +
                    " combat_success=" + std::to_string(nn::mode::combatSuccessRate()) +
                    " combat_checkpoint=" + nn::mode::combatCheckpointStatus() +
+                   " tactic_samples=" + std::to_string(nn::mode::tacticalSamples()) +
+                   " enemy_tactics=" + std::to_string(nn::mode::knownWeaknesses()) +
+                   " tactic_checkpoint=" + nn::mode::tacticalCheckpointStatus() +
                    " self_train=" + (nn::mode::training() ? "on" : "off") +
                    " auto=" + (nn::mode::active() ? "on" : "off") + "\nok\n";
         if (sub == "train" && tok.size() == 3 &&

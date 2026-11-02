@@ -228,6 +228,12 @@ double learningRate() { initialize(); return g.brain.learningRate(); }
 uint64_t combatSamples() { initialize(); return combat::samples(); }
 double combatMeanReward() { initialize(); return combat::meanReward(); }
 double combatSuccessRate() { initialize(); return combat::successRate(); }
+uint64_t tacticalSamples() { initialize(); return combat::tacticalSamples(); }
+std::size_t knownWeaknesses() { initialize(); return combat::knownWeaknesses(); }
+const char *tacticalCheckpointStatus() {
+    initialize();
+    return combat::tacticalCheckpointStatus();
+}
 const char *combatCheckpointStatus() {
     initialize();
     return combat::checkpointStatus();
@@ -278,6 +284,8 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     const bool firstVisit = g.visited.insert(visitKey(current)).second;
     if (eob3) combat::observe(objects, current, g.trainingEnabled);
     else combat::cancel();
+    // Do not issue another action while waiting for spell or attack damage.
+    if (eob3 && combat::waiting()) return;
 
     // Only reward or penalize a move AFTER the SOP engine has processed it.
     if (g.pending) {

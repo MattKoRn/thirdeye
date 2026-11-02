@@ -136,6 +136,9 @@ uint64_t combatSamples();
 double combatMeanReward();
 double combatSuccessRate();
 const char *combatCheckpointStatus();
+uint64_t tacticalSamples();
+std::size_t knownWeaknesses();
+const char *tacticalCheckpointStatus();
 
 // Returns the currently preferred action for diagnostics only.
 bool predict(VM::ObjectSystem &objects, int &key, double &confidence);

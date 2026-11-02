@@ -35,7 +35,7 @@ add_thirdeye_dir (vm
     )
 
 add_thirdeye_dir (nn
-    online_policy online_checkpoint online_mode combat_mode rolling_save
+    online_policy online_checkpoint online_mode combat_mode rolling_save tactical_memory
     )
 
 add_thirdeye_dir (savegame

@@ -346,6 +346,41 @@ count, mean reward, success ratio, learning rate, checkpoint state
 Importing a checkpoint while autonomous play is active discards stale
 feedback from the old policy before applying the loaded weights.
 
+**Enemy-specific tactical experiments and persistent weaknesses.**
+The EOB3 neural controller now inspects the **equipped right-hand item**
+of each living candidate attacker and distinguishes a weapon from an in-hand
+spell scroll or wand. For a verified NPC in the forward cell, it first
+experiments with untried attack/item types, then uses observed **damage
+per attempt** plus an exploration bonus to choose tactics previously effective
+against that NPC's **SOP class**. The experiment key records enemy class,
+equipped item class, spell-like kind, and the spell identifier if that
+identifier is explicitly exported by the item class; otherwise spell ID 0
+means not verified. Combat actions use the actual right-click item event
+and measure NPC HP afterward, allowing up to three action ticks for delayed
+spell/projectile results. A zero-damage result counts as a failed experiment;
+missing target observations, a changed party pose, or an interrupted UI
+sequence are **not** learned as a confirmed hit or miss.
+
+Per-enemy experience automatically saves to
+`Documents/ThirdeyeNN/weaknesses.ckpt` every eight confirmed attacks and
+on shutdown. It is a new checksum-validated sidecar (format
+`THIRDEYE_TACTICS 1`) that stores trials, hits and cumulative damage by
+enemy and tactic. A failed load never clears the in-memory data, and an
+invalid existing file is not overwritten. Existing `brain.ckpt` movement
+weights and `combat.ckpt` combat policy weights are unchanged.
+`nn status` reports `tactic_samples`, `enemy_tactics`, and
+`tactic_checkpoint`. The console reports each experiment and the current
+running damage average.
+
+**Limits:** Spell scrolls are consumed when used; the agent does not yet
+restock them. In-hand spellbook/holy-symbol spells require a separate
+level/spell menu and are deliberately **not** auto-selected until those
+menus have verified action coordinates; this iteration supports different
+weapon and wand/scroll spell **items**, not arbitrary memorized spells.
+Spell IDs are separated only when exposed by actual game class exports.
+As before, this combat path is EOB3-only; Dungeon Hack has different VM
+class layouts and UI coordinates.
+
 **Autonomous EOB3 combat (first supported interaction).** When F1 autonomy
 is active, a living enemy immediately ahead on the same floor triggers
 right-click weapon attacks through the existing event queue. The agent
