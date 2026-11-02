@@ -354,6 +354,11 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 		switch (ev.type) {
 		case SDL_EVENT_QUIT:
 			throw QuitRequested{};
+		case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+			// Apply window decorations only after SDL has left fullscreen;
+			// SDL_SetWindowBordered is a no-op while still fullscreen.
+			SDL_SetWindowBordered(gfx.getWindow(), true);
+			break;
 		case SDL_EVENT_KEY_DOWN: {
 			// Desktop-style fullscreen is borderless and uses all screen pixels.
 			// F11 is host-side (never sent to AESOP): let players switch back
