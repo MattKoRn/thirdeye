@@ -103,6 +103,8 @@ void GRAPHICS::Graphics::toggleFullscreen() {
 		SDL_SetWindowBordered(mWindow, false);
 	if (!SDL_SetWindowFullscreen(mWindow, !fullscreen)) {
 		std::cerr << "Could not toggle fullscreen: " << SDL_GetError() << std::endl;
+		if (!fullscreen)
+			SDL_SetWindowBordered(mWindow, true); // restore if entry was denied
 		return;
 	}
 	// SDL3 fullscreen transitions can be asynchronous. pumpHost restores the
