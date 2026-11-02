@@ -127,6 +127,15 @@ bool toggle();
 void setActive(bool enabled);
 bool consumesManualKey(int32_t code);
 
+// Read-only native EOB3 spell counters (mage/cleric) and active magic effects.
+// Counters are NOT cast_spell message IDs; no arbitrary spells are fired.
+std::string spellStockStatus(VM::ObjectSystem &objects, int partySlot);
+const char *spellProbeStatus();
+// Explicit one-shot native M:29 menu open, followed by M:172 close on the
+// subsequent host pump. Requires neural autonomy, an alive caster and stock.
+bool queueSpellProbe(VM::ObjectSystem &objects, int partySlot,
+                     int spellType, std::string &error);
+
 void setTraining(bool enabled);
 bool training();
 uint64_t samples();
