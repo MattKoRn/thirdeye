@@ -341,9 +341,10 @@ class InstallerTests(unittest.TestCase):
                     (build / "CMakeCache.txt").write_text("configured\n")
                     (build / "build.ninja").write_text("ninja\n")
                 elif "--build" in command:
-                    # An actual incremental generator would only touch this
-                    # when inputs changed; simulate an identical build result.
+                    # An actual incremental generator would only touch these
+                    # when inputs changed; simulate identical built outputs.
                     (build / "thirdeye").write_bytes(b"engine")
+                    (build / "thirdeye-unarj").write_bytes(b"extractor")
 
             with patch.object(install, "ROOT", root), \
                  patch.object(install.shutil, "which", return_value="/usr/bin/cmake"), \
