@@ -56,6 +56,10 @@ The installer builds the C++ engine in build/installer using CMake, installs
 it under the current user's app-data directory, and creates a desktop shortcut
 for Eye of the Beholder III or Dungeon Hack. It auto-installs prerequisites on
 Debian/Ubuntu (apt), macOS (Homebrew), or Windows (winget + MSVC + vcpkg).
+On Windows, existing winget packages (including 7-Zip installed under
+Program Files even when 7z.exe is not on PATH) are reused rather than
+reinstalled or upgraded. Installer errors are ignored only when winget
+can confirm that the requested package is installed.
 On Linux, SDL3 development packages require a sufficiently recent distribution
 (e.g. Ubuntu 25.04 or newer). Windows may require an elevated package-manager
 prompt; reopen your terminal if winget has just installed Git or CMake.
