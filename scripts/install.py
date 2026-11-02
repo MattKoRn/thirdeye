@@ -242,7 +242,17 @@ def safe_zip_extract(source, destination):
 
 
 def seven_zip():
-    return next((x for name in ("7z", "7zz", "7za") if (x := shutil.which(name))), None)
+    for name in ("7z", "7zz", "7za"):
+        exe = shutil.which(name)
+        if exe:
+            return exe
+    if os.name == "nt":
+        for env in ("ProgramFiles", "ProgramFiles(x86)"):
+            if os.environ.get(env):
+                candidate = Path(os.environ[env]) / "7-Zip/7z.exe"
+                if candidate.is_file():
+                    return str(candidate)
+    return None
 
 
 def extract_external(source, destination):
@@ -269,14 +279,24 @@ def expand_archives(root, game):
     """Expand installer ZIPs, optional CD image, then original ARJ data sets."""
     root = Path(root)
     # Keep all unpacked data in a temporary workspace, never overwrite saves.
-    for image in list(root.rglob("*.bin")) + list(root.rglob("*.BIN")):
-        if image.stat().st_size > MAX_DOWNLOAD:
-            fail("CD image exceeds permitted size")
-        iso = image.with_suffix(".converted.iso")
-        raw_bin_to_iso(image, iso)
-        extract_external(iso, root / "cd_contents")
-    for image in list(root.rglob("*.iso")) + list(root.rglob("*.ISO")):
-        if not image.name.endswith(".converted.iso"):
+    # Only BIN files paired with a CUE sheet are CD images. Game saves also
+    # use .BIN, and must NEVER be interpreted as 2352-byte raw CD sectors.
+    if game == "hack":
+        for cue in root.rglob("*"):
+            if not cue.is_file() or cue.suffix.lower() != ".cue":
+                continue
+            image = next((p for p in cue.parent.iterdir()
+                          if p.is_file() and p.suffix.lower() == ".bin"
+                          and p.stem.casefold() == cue.stem.casefold()), None)
+            if image is None:
+                continue
+            if image.stat().st_size > MAX_DOWNLOAD:
+                fail("CD image exceeds permitted size")
+            iso = image.with_suffix(".converted.iso")
+            raw_bin_to_iso(image, iso)
+            extract_external(iso, root / "cd_contents")
+    for image in list(root.rglob("*")):
+        if image.is_file() and image.suffix.lower() == ".iso" and not image.name.endswith(".converted.iso"):
             extract_external(image, root / "cd_contents")
     arjs = sorted((p for p in root.rglob("*") if p.is_file() and
                    re.fullmatch(r"DATA[0-9]+\.ARJ", p.name, flags=re.I)),

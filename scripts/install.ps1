@@ -13,7 +13,17 @@ if ($python) {
 } else {
     $python = Get-Command python -ErrorAction SilentlyContinue
     if (-not $python) {
-        throw "Install Python 3 with winget install Python.Python.3.13, then rerun."
+        Write-Host "Installing Python 3 with winget..."
+        winget install --id Python.Python.3.13 -e --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) { throw "Python installation failed. Install Python 3 manually." }
+        $python = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $python) {
+            $candidate = Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"
+            if (Test-Path $candidate) { $python = @{ Source = $candidate } }
+        }
+        if (-not $python) {
+            throw "Python installed but not yet on PATH. Reopen PowerShell and run the installer again."
+        }
     }
     $exe = $python.Source
     $arguments = @("$PSScriptRoot\install.py")

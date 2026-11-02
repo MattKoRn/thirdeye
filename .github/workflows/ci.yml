@@ -32,6 +32,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test Python installer (no proprietary game data required)
+        run: python -m unittest discover -s scripts/tests -v
+
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
