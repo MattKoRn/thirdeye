@@ -393,6 +393,37 @@ work. Spell IDs are separated only when exposed by actual class exports.
 As before, this combat path is EOB3-only; Dungeon Hack has different VM
 class layouts and UI coordinates.
 
+**Verified native spell-menu probe (opt-in, no speculative casts).**
+The control channel now exposes `nn spell status <slot>` (party slot 0..5),
+reporting that character's raw-runtime-derived mage/cleric **prepared-copy
+counts**, four-byte magic-effect bitmask and native `W:current_screen`.
+The count calculation follows EOB3 `spell_list` in `runtime/eye.cpp`:
+mage offsets 10..99 and cleric offsets 110..199 of the PC's
+`B:spell_cnt[200]` at class-static offset 209. These counters **do not**
+provide spell-class IDs or valid arguments for `magic.cast_spell` M:54.
+Unsupported/invalid counters are rejected instead of treated as castable.
+
+After `nn auto on`, `nn spell probe <slot> mage|cleric` queues one native
+`magic.activate` M:29 for an alive PC with prepared copies. On the next
+host pump it uses the same `magic.deactivate` M:172 verified by
+`THIRDEYE_SPELLMENU` in `runtime/event.cpp`, then reports the actual
+menu screen before/after, prepared copies and magic effects. It never sends
+menu coordinates, selection keys or M:54. F1 mode pauses its normal
+movement/combat actions for the probe; closing is attempted even if the
+user disables autonomy or a menu is active. `nn status` includes
+`spell_probe=queued|open|menu-cycle-verified|menu-transition-unverified|failed`.
+While F1 autonomy is active, the controller also reports observed changes
+in real spell counters/effects as `[nn] spell-state`, clearly marked
+`attributed_cast=no trained=no`. This adds live discovery telemetry
+without pretending that a resource change proves an enemy weakness.
+Neither `brain.ckpt`, `combat.ckpt`, `weaknesses.ckpt`, nor game-save
+formats are altered; `nn-1`/`nn-2`/`nn-3` recovery is unchanged.
+
+**Remaining limitation:** Spellbook/holy-symbol spell selection and the
+M:54 `sp` dispatch mapping still require verified event/bytecode tracing.
+A menu-open/close probe is not an autonomous spell cast; the neural agent
+does not use unverified input mappings or train on these observations.
+
 **Autonomous EOB3 combat (first supported interaction).** When F1 autonomy
 is active, a living enemy immediately ahead on the same floor triggers
 right-click weapon attacks through the existing event queue. The agent
@@ -426,7 +457,8 @@ When `THIRDEYE_CTL` is enabled on POSIX, the same model is
 available to the debug control socket. Commands:
 `nn status`, `nn train on/off` (toggle *autonomous
 outcome learning*, not player observation), `nn auto on/off`,
-`nn predict`, `nn step`,
+`nn predict`, `nn step`, `nn spell status <slot>`,
+`nn spell probe <slot> <mage|cleric>`,
 `nn save <path>`, and `nn load <path>`.
 `nn teach` is disabled; player demonstrations never train
 the model. Manual checkpoint commands do not change the automatic
