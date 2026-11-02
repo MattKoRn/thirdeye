@@ -23,7 +23,7 @@ static SDL_Surface *makeIndexedSurfaceFrom(void *pixels, int w, int h, int pitch
 	return s;
 }
 
-GRAPHICS::Graphics::Graphics(uint16_t scale, bool /*renderer*/) {
+GRAPHICS::Graphics::Graphics(uint16_t scale, bool /*renderer*/, bool windowed) {
 	std::cout << "Initializing SDL... ";
 	mScale = scale;
 	Uint32 flags = SDL_INIT_VIDEO;
@@ -45,7 +45,12 @@ GRAPHICS::Graphics::Graphics(uint16_t scale, bool /*renderer*/) {
 	          << " (" << (SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "?")
 	          << ")" << std::endl;
 
-	mWindow = SDL_CreateWindow("Thirdeye", WIDTH * mScale, HEIGHT * mScale, 0);
+	// Default to borderless fullscreen at the current DESKTOP resolution.
+	// SDL3's FULLSCREEN flag does not change the monitor to an exclusive
+	// low-resolution display mode unless one is explicitly requested.
+	// --windowed retains the old scaled window for testing and preference.
+	mWindow = SDL_CreateWindow("Thirdeye", WIDTH * mScale, HEIGHT * mScale,
+	                           gameWindowFlags(windowed));
 	if (mWindow == nullptr)
 		throw std::runtime_error(
 				"Could not create window: " + std::string(SDL_GetError()));
@@ -63,8 +68,15 @@ GRAPHICS::Graphics::Graphics(uint16_t scale, bool /*renderer*/) {
 
 	// SDL3 replaces SDL_HINT_RENDER_SCALE_QUALITY with per-texture scale mode
 	// (set on mPresentTex once it's created below in update()).
-	SDL_SetRenderLogicalPresentation(mRenderer, WIDTH, HEIGHT,
-	                                 SDL_LOGICAL_PRESENTATION_LETTERBOX);
+	// Fill every display pixel, including widescreen margins: a 320x200
+	// frame is scaled independently in X and Y. No letterbox/black bars or
+	// clipped game HUD. SDL_ConvertEventToRenderCoordinates reverses this
+	// stretch for mouse input, so DOS hit regions remain accurate.
+	if (!SDL_SetRenderLogicalPresentation(mRenderer, WIDTH, HEIGHT,
+	                                     GAME_PRESENTATION))
+		throw std::runtime_error(
+				"Could not configure fullscreen presentation: " +
+				std::string(SDL_GetError()));
 
 	mPalette = SDL_CreatePalette(256);
 	// SDL3 seeds palette entries to WHITE; any bitmap using a palette index
@@ -83,6 +95,14 @@ GRAPHICS::Graphics::Graphics(uint16_t scale, bool /*renderer*/) {
 	mVideoWait = 0;
 	mRunningClock = 0;
 	mSleep = 0;
+}
+
+void GRAPHICS::Graphics::toggleFullscreen() {
+	const bool fullscreen = (SDL_GetWindowFlags(mWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+	if (!SDL_SetWindowFullscreen(mWindow, !fullscreen)) {
+		std::cerr << "Could not toggle fullscreen: " << SDL_GetError() << std::endl;
+	}
+	// The STRETCH logical presentation follows the resized window automatically.
 }
 
 GRAPHICS::Graphics::~Graphics() {
@@ -1661,15 +1681,11 @@ void GRAPHICS::Graphics::saveScreenshot(const std::string &path) {
 }
 
 void GRAPHICS::Graphics::mouseToLogical(int wx, int wy, int &lx, int &ly) const {
-	// The coords we get here come from SDL mouse *events*, and SDL's renderer
-	// event-watch ALREADY scales event coordinates into the logical (320x200) space
-	// whenever SDL_RenderSetLogicalSize is set -- verified: at --scale 2, a warp to
-	// window (292,266) arrives as event (146,133). So the input is already logical;
-	// we just clamp it. Do NOT re-scale by the window/--scale here: that double-
-	// converts and makes every click land at the wrong spot for --scale > 1 (the
-	// clicks-miss-when-scaled bug), while looking fine at --scale 1 (identity).
-	// (NB: SDL_GetMouseState, unlike events, returns RAW window coords -- so it must
-	// NOT be used for position here; we only use it for the button-state bits.)
+	// pumpHost has called SDL_ConvertEventToRenderCoordinates on this event.
+	// SDL3 uses the renderer's current STRETCH transform to undo both screen
+	// X and Y scaling (important for widescreen). Coordinates are already
+	// logical 320x200; dividing again by --scale breaks click hit-testing.
+	// Clamp only, including events just outside the window.
 	lx = wx;
 	ly = wy;
 	if (lx < 0) lx = 0; else if (lx >= WIDTH) lx = WIDTH - 1;
