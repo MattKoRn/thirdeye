@@ -52,6 +52,44 @@ class InstallerTests(unittest.TestCase):
                               side_effect=AssertionError("save treated as CD")):
                 self.assertEqual(install.expand_archives(root, "eob3"), game)
 
+    def test_arj_volumes_are_extracted_together_not_with_7zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for n in range(1, 7):
+                (root / ("DATA%d.ARJ" % n)).write_bytes(b"ARJ volume")
+            extracted = []
+
+            def fake_extract(volumes, destination, game):
+                extracted.append((list(volumes), destination, game))
+                destination.mkdir(parents=True, exist_ok=True)
+                (destination / "EYE.RES").write_bytes(b"game data")
+
+            with patch.object(install, "extract_arj_volumes",
+                              side_effect=fake_extract), \
+                 patch.object(install, "extract_external",
+                              side_effect=AssertionError("7-Zip used for ARJ")):
+                found = install.expand_archives(root, "eob3")
+            self.assertEqual(found, root / "unpacked_game")
+            self.assertEqual(len(extracted), 1)
+            volumes, destination, game = extracted[0]
+            self.assertEqual([p.name for p in volumes],
+                             ["DATA%d.ARJ" % n for n in range(1, 7)])
+            self.assertEqual(game, "eob3")
+
+    def test_native_arj_invokes_built_decoder_with_space_in_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "folder with spaces"
+            directory.mkdir()
+            extractor = directory / "thirdeye-unarj.exe"
+            extractor.touch()
+            volume = directory / "DATA1.ARJ"
+            volume.touch()
+            target = directory / "game output"
+            with patch.object(install, "unarj_executable", return_value=extractor), \
+                 patch.object(install, "run") as run:
+                install.extract_arj_volumes([volume], target, "eob3")
+                run.assert_called_once_with([extractor, target, "eob3", volume])
+
     def test_bin_conversion(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
