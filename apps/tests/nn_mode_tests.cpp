@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 #include "../thirdeye/nn/online_mode.hpp"
+#include "../thirdeye/nn/spell_probe.hpp"
 #include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
@@ -10,6 +11,54 @@
 #include <filesystem>
 
 namespace mode = THIRDEYE::nn::mode;
+
+TEST(nnSpell, ReadsOnlyActualPreparedSpellCountersNotCastIds) {
+    namespace spell = THIRDEYE::nn::spell;
+    std::array<uint8_t, 200> counts{};
+    counts[10] = 2;   // mage level 1: spell 0, two copies
+    counts[19] = 1;   // mage level 1: spell 9
+    counts[99] = 1;   // mage level 9: spell 9
+    counts[110] = 3;  // cleric level 1: spell 0
+    counts[199] = 2;  // cleric level 9: spell 9
+    counts[0] = 75;   // leading reserved bytes are NOT spell counters
+    counts[100] = 77; // cleric leading reserved bytes also ignored
+    EXPECT_EQ(spell::available(counts, 0), 4);
+    EXPECT_EQ(spell::available(counts, 1), 5);
+    EXPECT_EQ(spell::available(counts, -1), -1);
+    EXPECT_EQ(spell::available(counts, 2), -1);
+    counts[10] = 0xff; // game uses -1 for unmemorized
+    EXPECT_EQ(spell::available(counts, 0), 2);
+    counts[19] = 11; // invalid count: do not advertise it
+    EXPECT_EQ(spell::available(counts, 0), -1);
+}
+
+TEST(nnSpell, NativeProbeOnlyReportsVerifiedOpenAndClose) {
+    using Probe = THIRDEYE::nn::spell::Probe;
+    Probe probe;
+    EXPECT_STREQ(probe.status(), "idle");
+    EXPECT_FALSE(probe.begin(1, 2)); // another UI owns the screen
+    EXPECT_FALSE(probe.begin(0, 0)); // no prepared resource
+    ASSERT_TRUE(probe.begin(0, 2));
+    EXPECT_TRUE(probe.shouldOpen());
+    EXPECT_FALSE(probe.begin(0, 2)); // cannot queue concurrent actions
+    probe.opened(5);
+    EXPECT_TRUE(probe.shouldClose());
+    EXPECT_STREQ(probe.status(), "open");
+    probe.closed(0);
+    EXPECT_EQ(probe.stage(), Probe::Stage::Verified);
+    EXPECT_STREQ(probe.status(), "menu-cycle-verified");
+    EXPECT_FALSE(probe.busy());
+
+    ASSERT_TRUE(probe.begin(0, 1));
+    probe.opened(0); // activation failed to switch to native menu
+    probe.closed(0);
+    EXPECT_EQ(probe.stage(), Probe::Stage::Unverified);
+    EXPECT_STREQ(probe.status(), "menu-transition-unverified");
+    ASSERT_TRUE(probe.begin(0, 1));
+    probe.fail();
+    EXPECT_EQ(probe.stage(), Probe::Stage::Failed);
+    EXPECT_FALSE(probe.shouldClose());
+}
 
 TEST(nnMode, BrainLivesDirectlyInsideDocumentsThirdeyeNN) {
     const std::filesystem::path docs("my-documents");
