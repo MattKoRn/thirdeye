@@ -80,8 +80,17 @@ abandonware labels are NOT evidence of a redistribution license; use a copy
 you legitimately own if in doubt. Internet Archive files and formats may
 change; failed extraction tells you to import a working installed directory.
 
-To use existing dependencies without running the package manager, add
---no-deps. The installer's optional self-tests need no compiler or game files:
+Repeat installer runs are incremental: the installer keeps build/installer
+and its compiled object files, skips unchanged CMake configuration and package
+installation, and asks Ninja/MSBuild to recompile only changed source files
+(and files affected by changed headers). Updating a CMakeLists.txt will
+automatically trigger regeneration. Unchanged binaries are not recopied.
+
+To force a complete rebuild, use --clean-build (PowerShell: -CleanBuild).
+To explicitly rerun dependency setup, use --refresh-deps (PowerShell:
+-RefreshDeps). To use existing dependencies without running the package
+manager, use --no-deps (PowerShell: -NoDeps). The installer's optional
+self-tests need no compiler or game files:
 
     python3 -m unittest discover -s scripts/tests -v
 
