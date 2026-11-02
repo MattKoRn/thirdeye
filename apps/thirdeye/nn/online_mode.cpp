@@ -438,6 +438,8 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     if (eob3 && g.autonomous && !uiActive) observeSpellStock(objects);
     // Never interpret changes caused by menus or manual control as rewards.
     if (!g.autonomous || uiActive) {
+        // A queued probe must never fire later after an unrelated menu closes.
+        if (g.spellProbe.shouldOpen()) g.spellProbe.fail();
         combat::cancel();
         g.pending.reset();
         // Returning from a menu or restarting autonomous play must not
@@ -523,6 +525,10 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
                           << " prepared=" << g.spellPreparedBefore
                           << " native_message=29 cast=no\n";
             } catch (const std::exception &e) {
+                // An exception can occur after the SOP has changed UI state.
+                // Best-effort native deactivation avoids leaving the HUD stuck.
+                try { objects.send(magic, 172, {}); }
+                catch (const std::exception &) {}
                 g.spellProbe.fail();
                 std::cerr << "[nn] spell probe open failed: " << e.what() << '\n';
             }
