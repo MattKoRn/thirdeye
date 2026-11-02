@@ -39,9 +39,18 @@ Linux and macOS:
 
     sh scripts/install.sh
 
-Windows PowerShell:
+Windows (Command Prompt or PowerShell):
 
-    powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+    .\scripts\install.cmd
+
+The .cmd launcher starts the existing PowerShell installer with a
+process-only execution-policy override. It avoids the "running scripts is
+disabled on this system" error without permanently changing execution
+policy. Running .\scripts\install.ps1 directly may still be blocked.
+If your organization enforces execution policy through Group Policy, use
+the Python entry point instead (if Python 3 is already installed):
+
+    py -3 scripts/install.py
 
 The installer builds the C++ engine in build/installer using CMake, installs
 it under the current user's app-data directory, and creates a desktop shortcut
@@ -63,8 +72,8 @@ Noninteractive game/source selection examples:
     sh scripts/install.sh --game hack --source "$HOME/Downloads/dungeonhack.zip"
     sh scripts/install.sh --game skip
 
-    .\scripts\install.ps1 -Game hack -Source 'C:\Games\DUNGEON HACK'
-    .\scripts\install.ps1 -Game skip
+    .\scripts\install.cmd -Game hack -Source "C:\Games\DUNGEON HACK"
+    .\scripts\install.cmd -Game skip
 
 A game choice of skip reuses an existing detected installation and preserves
 its saves. The selected game folder can also be imported from ZIP/GOG Linux
