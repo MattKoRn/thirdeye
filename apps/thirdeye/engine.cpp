@@ -126,6 +126,9 @@ void THIRDEYE::Engine::setScale(uint16_t scale) {
 void THIRDEYE::Engine::setRenderer(bool renderer) {
 	mRenderer = renderer;
 }
+void THIRDEYE::Engine::setWindowed(bool windowed) {
+	mWindowed = windowed;
+}
 
 namespace {
 
@@ -352,6 +355,14 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 		case SDL_EVENT_QUIT:
 			throw QuitRequested{};
 		case SDL_EVENT_KEY_DOWN: {
+			// Desktop-style fullscreen is borderless and uses all screen pixels.
+			// F11 is host-side (never sent to AESOP): let players switch back
+			// to a normal window without relying on a missing title bar.
+			if (ev.key.scancode == SDL_SCANCODE_F11) {
+				if (!ev.key.repeat)
+					gfx.toggleFullscreen();
+				break;
+			}
 			// The SOP code expects DOS/BIOS key codes: printable keys are ASCII
 			// (SDL keysyms already are, incl. ESC=0x1b/Enter=0x0d), but the arrow
 			// keys are (scancode << 8) with a zero ASCII byte. SDL's own arrow
@@ -902,7 +913,7 @@ void THIRDEYE::Engine::bootObject(RESOURCES::Resource &resource,
 	// (the runtime draw functions then no-op through to the stub).
 	std::unique_ptr<GRAPHICS::Graphics> gfx;
 	try {
-		gfx = std::make_unique<GRAPHICS::Graphics>(mScale, mRenderer);
+		gfx = std::make_unique<GRAPHICS::Graphics>(mScale, mRenderer, mWindowed);
 		// Automap overlay hook: fires at the end of gfx.update() -- last thing
 		// on mScreen before texture upload, so the map lands on top of every
 		// SOP draw + the compass restamp. The captured raw pointer is safe:
@@ -1589,7 +1600,7 @@ void THIRDEYE::Engine::go() {
 	// without driving the title menu, since headless autowalk doesn't currently
 	// reach the menu's mouse-region handler.
 	if (mChargenTest) {
-		GRAPHICS::Graphics gfx(mScale);
+		GRAPHICS::Graphics gfx(mScale, mRenderer, mWindowed);
 		std::filesystem::path chargenDir =
 		    resolveChildCI(resFile.parent_path(), "CHARGEN");
 		try {
