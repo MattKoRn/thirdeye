@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     try {
-        const fs::path destination = fs::u8path(argv[1]);
+        const fs::path destination = fs::path(argv[1]);
         const std::string game = argv[2];
         if (game != "eob3" && game != "hack")
             throw std::runtime_error("Unsupported game identifier: " + game);
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
         std::vector<std::vector<std::uint8_t>> volumes;
         std::uint64_t total = 0;
         for (int i = 3; i < argc; ++i) {
-            auto vol = readVolume(fs::u8path(argv[i]));
+            auto vol = readVolume(fs::path(argv[i]));
             if (vol.size() > MAX_ARCHIVE_BYTES - total)
                 throw std::runtime_error("Combined ARJ archive size exceeds limit");
             total += vol.size();
@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
             fs::path subdir;
             if (game == "eob3") {
                 const std::string sourceStem =
-                    upperAscii(fs::u8path(argv[3 + file.volume]).stem().string());
+                    upperAscii(fs::path(argv[3 + file.volume]).stem().string());
                 if (sourceStem == "DATA5")
                     subdir = "SAVEGAME";
                 else if (sourceStem == "DATA6")
@@ -116,14 +116,14 @@ int main(int argc, char** argv) {
             fs::path parent = destination;
             if (game == "eob3") {
                 const std::string sourceStem =
-                    upperAscii(fs::u8path(argv[3 + file.volume]).stem().string());
+                    upperAscii(fs::path(argv[3 + file.volume]).stem().string());
                 if (sourceStem == "DATA5")
                     parent /= "SAVEGAME";
                 else if (sourceStem == "DATA6")
                     parent /= "CHARGEN";
             }
             fs::create_directories(parent);
-            const fs::path target = parent / fs::u8path(file.name);
+            const fs::path target = parent / fs::path(file.name);
             std::ofstream out(target, std::ios::binary | std::ios::trunc);
             if (!out || !out.write(reinterpret_cast<const char*>(file.data.data()),
                                    static_cast<std::streamsize>(file.data.size())))
