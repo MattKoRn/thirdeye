@@ -1,9 +1,11 @@
 """Dependency-free installer regression tests; no game data or downloads needed."""
 import io
+import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -77,6 +79,56 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(len(install.archive_choices("eob3", metadata)), 4)
         with self.assertRaises(RuntimeError):
             install.archive_choices("hack", metadata)
+
+
+    def test_incremental_build_preserves_objects_and_installed_binary(self):
+        """Unchanged reruns skip configure, and clean builds are explicit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            home = Path(tmp) / "home"
+            home.mkdir()
+            build = root / "build" / "installer"
+            calls = []
+
+            def fake_run(command, **_kwargs):
+                command = list(map(str, command))
+                calls.append(command)
+                if "-S" in command:
+                    build.mkdir(parents=True, exist_ok=True)
+                    (build / "CMakeCache.txt").write_text("configured\n")
+                    (build / "build.ninja").write_text("ninja\n")
+                elif "--build" in command:
+                    # An actual incremental generator would only touch this
+                    # when inputs changed; simulate an identical build result.
+                    (build / "thirdeye").write_bytes(b"engine")
+
+            with patch.object(install, "ROOT", root), \\
+                 patch.object(install.shutil, "which", return_value="/usr/bin/cmake"), \\
+                 patch.object(install, "run", side_effect=fake_run):
+                exe = install.build_engine("linux", home)
+                self.assertTrue(exe.is_file())
+                installed_timestamp = exe.stat().st_mtime_ns
+                (build / "kept-object.o").write_bytes(b"object")
+
+                install.build_engine("linux", home)
+                self.assertEqual(sum("-S" in cmd for cmd in calls), 1)
+                self.assertEqual(sum("--build" in cmd for cmd in calls), 2)
+                self.assertTrue((build / "kept-object.o").exists())
+                self.assertEqual(exe.stat().st_mtime_ns, installed_timestamp)
+
+                # A settings change requires reconfigure, not object removal.
+                stamp = build / ".installer-config.json"
+                settings = json.loads(stamp.read_text())
+                settings["options"] = []
+                stamp.write_text(json.dumps(settings))
+                install.build_engine("linux", home)
+                self.assertEqual(sum("-S" in cmd for cmd in calls), 2)
+                self.assertTrue((build / "kept-object.o").exists())
+
+                install.build_engine("linux", home, clean=True)
+                self.assertEqual(sum("-S" in cmd for cmd in calls), 3)
+                self.assertFalse((build / "kept-object.o").exists())
 
 
 if __name__ == "__main__":
