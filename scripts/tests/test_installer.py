@@ -37,6 +37,19 @@ class InstallerTests(unittest.TestCase):
                 install.safe_zip_extract(evil, root / "out")
             self.assertFalse((root / "escape.txt").exists())
 
+    def test_saved_bin_is_not_mistaken_for_cd_image(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            game = root / "installed"
+            game.mkdir()
+            (game / "EYE.RES").write_bytes(b"sample")
+            (game / "SAVEGAME").mkdir()
+            (game / "SAVEGAME" / "ITEMS_00.BIN").write_bytes(b"save")
+            with patch.object(install, "raw_bin_to_iso",
+                              side_effect=AssertionError("save treated as CD")):
+                self.assertEqual(install.expand_archives(root, "eob3"), game)
+
     def test_bin_conversion(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
