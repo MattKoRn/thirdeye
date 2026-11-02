@@ -3,6 +3,7 @@
 #include "../thirdeye/nn/online_policy.hpp"
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 
 namespace mode = THIRDEYE::nn::mode;
@@ -52,4 +53,49 @@ TEST(nnMode, PureOutcomeLearnerCanImproveWithoutPlayerExamples) {
     EXPECT_EQ(learner.samples(), 150u);
     EXPECT_EQ(learner.successes(), 150u);
     EXPECT_DOUBLE_EQ(learner.successRate(), 1.0);
+}
+
+TEST(nnMode, AutonomousActionRateIsOnePerElapsedSecond) {
+    mode::ActionPacer pacer;
+    using Clock = mode::ActionPacer::Clock;
+    const auto start = Clock::time_point{};
+    pacer.reset(start);
+
+    EXPECT_FALSE(pacer.ready(start));
+    // Thousands of host frames cannot cause an early action.
+    for (int frame = 0; frame < 1000; ++frame)
+        EXPECT_FALSE(pacer.ready(start + std::chrono::milliseconds(999)));
+    EXPECT_TRUE(pacer.ready(start + std::chrono::seconds(1)));
+    EXPECT_FALSE(pacer.ready(start + std::chrono::seconds(1)));
+    EXPECT_FALSE(pacer.ready(start + std::chrono::milliseconds(1999)));
+    EXPECT_TRUE(pacer.ready(start + std::chrono::seconds(2)));
+}
+
+TEST(nnMode, ActionPacerDoesNotBurstAfterLongGameStall) {
+    mode::ActionPacer pacer;
+    using Clock = mode::ActionPacer::Clock;
+    const auto start = Clock::time_point{};
+    pacer.reset(start);
+
+    const auto resumed = start + std::chrono::minutes(5);
+    EXPECT_TRUE(pacer.ready(resumed));
+    // Five minutes elapsed, but exactly one action is authorized.
+    EXPECT_FALSE(pacer.ready(resumed));
+    EXPECT_FALSE(pacer.ready(resumed + std::chrono::milliseconds(999)));
+    EXPECT_TRUE(pacer.ready(resumed + std::chrono::seconds(1)));
+}
+
+TEST(nnMode, TogglingAutonomyOrExitingMenuRestartsActionCooldown) {
+    mode::ActionPacer pacer;
+    using Clock = mode::ActionPacer::Clock;
+    const auto start = Clock::time_point{};
+    pacer.reset(start);
+    EXPECT_TRUE(pacer.ready(start + std::chrono::seconds(1)));
+
+    // setActive() and a non-gameplay pump both reset the same pacer.
+    const auto resumed = start + std::chrono::milliseconds(1500);
+    pacer.reset(resumed);
+    EXPECT_FALSE(pacer.ready(resumed));
+    EXPECT_FALSE(pacer.ready(resumed + std::chrono::milliseconds(999)));
+    EXPECT_TRUE(pacer.ready(resumed + std::chrono::seconds(1)));
 }

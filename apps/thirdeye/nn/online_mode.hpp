@@ -2,6 +2,7 @@
 #define THIRDEYE_NN_ONLINE_MODE_HPP
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -9,6 +10,25 @@
 namespace VM { class ObjectSystem; class EventSystem; }
 
 namespace THIRDEYE::nn::mode {
+
+// Throttle gameplay actions using elapsed monotonic time, never the number of
+// host pumps. Each action schedules its own next deadline, so a stalled game
+// cannot emit a burst of catch-up inputs. Accept an injected time for tests.
+class ActionPacer {
+public:
+    using Clock = std::chrono::steady_clock;
+    static constexpr std::chrono::seconds kInterval{1};
+
+    void reset(Clock::time_point now) { next_ = now + kInterval; }
+    bool ready(Clock::time_point now) {
+        if (now < next_) return false;
+        next_ = now + kInterval;
+        return true;
+    }
+
+private:
+    Clock::time_point next_ = Clock::time_point::max();
+};
 
 // A movement result is only learned after the next host tick has allowed the
 // SOP runtime to process the key. This pure evaluator is unit tested.

@@ -22,7 +22,6 @@ namespace {
 constexpr uint16_t kKernelClass = 1382;
 constexpr uint16_t kDungeonClass = 1381;
 constexpr uint64_t kAutoSaveInterval = 32;
-constexpr int kActionIntervalPumps = 40;
 
 struct State {
     OnlinePolicy brain;
@@ -33,7 +32,7 @@ struct State {
     bool autonomous = false;
     bool dirty = false;
     bool storageWarningLogged = false;
-    int ticks = 0;
+    ActionPacer pacer;
     uint64_t savedSamples = 0;
     struct Pending {
         OnlinePolicy::Features features{};
@@ -188,7 +187,7 @@ bool active() { return g.autonomous; }
 void setActive(bool enabled) {
     initialize();
     g.autonomous = enabled;
-    g.ticks = 0;
+    g.pacer.reset(ActionPacer::Clock::now());
     g.pending.reset();
     g.failurePose.reset();
     g.failedActions.fill(false);
@@ -227,10 +226,14 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive) {
     // Never interpret changes caused by menus or manual control as rewards.
     if (!g.autonomous || uiActive) {
         g.pending.reset();
+        // Returning from a menu or restarting autonomous play must not
+        // release an action accumulated while gameplay was unavailable.
+        g.pacer.reset(ActionPacer::Clock::now());
         return;
     }
-    if (++g.ticks < kActionIntervalPumps) return;
-    g.ticks = 0;
+    // Enforce one action per elapsed second, independent of host frame rate.
+    // ready() advances from *now*, never trying to catch up missed actions.
+    if (!g.pacer.ready(ActionPacer::Clock::now())) return;
 
     OnlinePolicy::Features features{};
     std::array<bool, 4> blocked{};
