@@ -231,8 +231,11 @@ def build_engine(kind, home, clean=False, install_deps=True, refresh_deps=False)
         info("Reusing CMake configuration in " + str(build))
     info("Incremental build: only changed sources and their dependencies will compile.")
     # Ninja/MSBuild automatically rerun CMake when CMakeLists.txt files change.
-    run([cmake, "--build", build, "--target", "thirdeye", "--config", "Release",
-         "--parallel", "2"])
+    run([cmake, "--build", build, "--target", "thirdeye", "thirdeye-unarj",
+         "--config", "Release", "--parallel", "2"])
+    if not unarj_executable().is_file():
+        fail("Build completed but legacy ARJ extractor is missing: " +
+             str(unarj_executable()))
     candidates = ([build / "thirdeye.app/Contents/MacOS/thirdeye"] if kind == "mac" else
                   [build / "Release/thirdeye.exe", build / "thirdeye.exe"] if kind == "windows" else
                   [build / "thirdeye"])
@@ -337,11 +340,34 @@ def seven_zip():
 
 
 def extract_external(source, destination):
+    """Unpack ISO images with 7-Zip. ARJ uses our native multi-volume decoder."""
     extractor = seven_zip()
     if not extractor:
-        fail("7-Zip is needed to unpack ISO/ARJ files. Install 7zip, then rerun.")
+        fail("7-Zip is needed to unpack ISO files. Install 7zip, then rerun.")
     Path(destination).mkdir(parents=True, exist_ok=True)
     run([extractor, "x", "-y", "-o" + str(destination), str(source)])
+
+
+def unarj_executable():
+    """Locate the Qt-free decoder built alongside the engine."""
+    build = ROOT / "build" / "installer"
+    kind = os_name()
+    candidates = ([build / "Release/thirdeye-unarj.exe",
+                   build / "thirdeye-unarj.exe"] if kind == "windows" else
+                  [build / "thirdeye.app/Contents/MacOS/thirdeye-unarj",
+                   build / "thirdeye-unarj"] if kind == "mac" else
+                  [build / "thirdeye-unarj"])
+    return next((p for p in candidates if p.is_file()), candidates[0])
+
+
+def extract_arj_volumes(volumes, destination, game):
+    """Decode complete ARJ volume sets in one pass (including split files)."""
+    extractor = unarj_executable()
+    if not extractor.is_file():
+        fail("Native ARJ decoder not built; rerun the installer to compile it.")
+    Path(destination).mkdir(parents=True, exist_ok=True)
+    info("Extracting " + str(len(volumes)) + " ARJ volume(s) using native decoder.")
+    run([extractor, Path(destination), game] + list(volumes))
 
 
 def raw_bin_to_iso(source, target):
@@ -383,12 +409,10 @@ def expand_archives(root, game):
                    re.fullmatch(r"DATA[0-9]+\.ARJ", p.name, flags=re.I)),
                   key=lambda p: int(re.search(r"[0-9]+", p.name).group()))
     if arjs:
-        out = root / "unpacked_game"
-        for arj in arjs:
-            number = int(re.search(r"[0-9]+", arj.name).group())
-            subfolder = ("SAVEGAME" if number == 5 else
-                         "CHARGEN" if number == 6 else "") if game == "eob3" else ""
-            extract_external(arj, out / subfolder)
+        # Extract together. EOB3 stores EYE.RES and other files across
+        # DATA1..DATA6; 7-Zip cannot decode all old ARJ compression methods
+        # and extracting volumes separately destroys the continuation chain.
+        extract_arj_volumes(arjs, root / "unpacked_game", game)
     return find_game_dir(root / "unpacked_game", game) or find_game_dir(root, game)
 
 
@@ -463,8 +487,10 @@ def source_directory(path, game, stage):
         fail("Source does not exist: " + str(src))
     if src.suffix.lower() in (".zip", ".sh"):
         safe_zip_extract(src, stage)
-    elif src.suffix.lower() in (".iso", ".arj"):
+    elif src.suffix.lower() == ".iso":
         extract_external(src, stage)
+    elif src.suffix.lower() == ".arj":
+        extract_arj_volumes([src], stage / "unpacked_game", game)
     elif src.suffix.lower() == ".bin":
         iso = stage / "disc.iso"
         raw_bin_to_iso(src, iso)
