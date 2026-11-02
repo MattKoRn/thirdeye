@@ -169,6 +169,8 @@ std::string handle(const std::vector<std::string> &tok,
             return "nn samples=" + std::to_string(nn::mode::samples()) +
                    " reward=" + std::to_string(nn::mode::meanReward()) +
                    " success=" + std::to_string(nn::mode::successRate()) +
+                   " rate=" + std::to_string(nn::mode::learningRate()) +
+                   " checkpoint=" + nn::mode::checkpointStatus() +
                    " self_train=" + (nn::mode::training() ? "on" : "off") +
                    " auto=" + (nn::mode::active() ? "on" : "off") + "\nok\n";
         if (sub == "train" && tok.size() == 3 &&

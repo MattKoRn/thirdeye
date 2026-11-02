@@ -1,11 +1,14 @@
 #ifndef THIRDEYE_NN_ONLINE_MODE_HPP
 #define THIRDEYE_NN_ONLINE_MODE_HPP
 
+#include "online_policy.hpp"
+
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <unordered_set>
 
 namespace VM { class ObjectSystem; class EventSystem; }
 
@@ -45,10 +48,41 @@ inline Outcome evaluateOutcome(const Pose &before, const Pose &after,
     const bool moved = before.x != after.x || before.y != after.y ||
                        before.level != after.level;
     const bool turned = before.facing != after.facing;
-    const bool success = action < 4 ? moved : turned;
+    const bool changedLevel = before.level != after.level;
+    const bool success = action < 4 ? moved : (turned && !changedLevel);
     if (!success) return {false, -1.25};
     if (action >= 4) return {true, 0.08};
+    if (changedLevel) return {true, 2.0};
     return {true, firstVisit ? 1.8 : 0.20};
+}
+
+// Prioritize accessible, unexplored neighbouring cells before backtracking.
+// Visit keys are level-specific, preventing collisions between dungeon floors.
+inline uint32_t visitKey(const Pose &pose) {
+    return (static_cast<uint32_t>(pose.level) << 10) |
+           (static_cast<uint32_t>(pose.y) << 5) |
+           static_cast<uint32_t>(pose.x);
+}
+inline std::array<bool, OnlinePolicy::kActions> frontierActions(
+    const Pose &pose,
+    const std::array<bool, OnlinePolicy::kActions> &allowed,
+    const std::unordered_set<uint32_t> &visited) {
+    std::array<bool, OnlinePolicy::kActions> frontier{};
+    if (pose.level < 0 || pose.facing < 0 || pose.facing >= 4) return frontier;
+    constexpr std::array<int, 4> dx{0, 1, 0, -1};
+    constexpr std::array<int, 4> dy{-1, 0, 1, 0};
+    // Forward, back, strafe left, strafe right.
+    constexpr std::array<int, 4> offsets{0, 2, 3, 1};
+    for (std::size_t action = 0; action < offsets.size(); ++action) {
+        if (!allowed[action]) continue;
+        const int direction = (pose.facing + offsets[action]) % 4;
+        const int x = pose.x + dx[direction];
+        const int y = pose.y + dy[direction];
+        if (x < 0 || x >= 32 || y < 0 || y >= 32) continue;
+        if (!visited.contains(visitKey({x, y, pose.facing, pose.level})))
+            frontier[action] = true;
+    }
+    return frontier;
 }
 
 // Pure helpers: testable without SDL or a running game.
@@ -74,6 +108,8 @@ uint64_t samples();
 double meanLoss();
 double meanReward();
 double successRate();
+double learningRate();
+const char *checkpointStatus();
 
 // Returns the currently preferred action for diagnostics only.
 bool predict(VM::ObjectSystem &objects, int &key, double &confidence);

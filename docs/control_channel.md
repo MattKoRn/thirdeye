@@ -300,11 +300,20 @@ actual position and facing with the state before the action. It learns
 from **its own successes and failures**, without demonstrations: first-time
 cell visits receive a larger reward, revisits and turns a small reward,
 and moves that fail receive a penalty. Known walls are excluded from
-choices. Repeating failed actions at the same pose is suppressed until
-position or facing changes. Unexpected teleports and UI transitions are
-excluded from feedback. Autonomous progress can be inspected through the
-socket's `nn status` command, which reports outcome count,
-mean reward, success ratio, and learning enabled/disabled state.
+choices. Level-aware visit memory prioritizes accessible unexplored cells,
+then falls back to learned choices for backtracking and turns. Repeating
+failed actions at the same pose is suppressed until position or facing
+changes. Same-floor teleports, multi-level scripted resets, and UI
+transitions are excluded from feedback; adjacent-level movement transitions
+now earn an exploration reward. The online reinforcement learning rate
+gradually decays from 0.10 toward 0.025 and resumes from the saved training
+count after restart. Each trained action logs its outcome, reward, applied
+learning rate, sample count, and checkpoint status; successful automatic
+checkpoints are logged too. The socket's `nn status` command reports sample
+count, mean reward, success ratio, learning rate, checkpoint state
+(new/pending/saved/unavailable), and training enabled/disabled state.
+Importing a checkpoint while autonomous play is active discards stale
+feedback from the old policy before applying the loaded weights.
 
 The neural brain automatically loads from the operating system's resolved
 Documents folder, at `Documents/ThirdeyeNN/brain.ckpt`.

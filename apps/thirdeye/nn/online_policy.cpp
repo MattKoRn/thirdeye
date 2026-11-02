@@ -103,7 +103,7 @@ bool OnlinePolicy::reinforce(const Features &features, int action,
         return false;
     const auto p = probabilities(features, weights_);
     const double bounded = std::clamp(reward, -2.0, 2.0);
-    constexpr double rate = 0.10;
+    const double rate = learningRate();
     for (std::size_t a = 0; a < kActions; ++a) {
         const double gradient =
             (a == static_cast<std::size_t>(action) ? 1.0 : 0.0) - p[a];

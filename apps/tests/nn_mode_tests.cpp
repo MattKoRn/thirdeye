@@ -2,7 +2,9 @@
 #include "../thirdeye/nn/online_mode.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
+#include <algorithm>
 #include <array>
+#include <unordered_set>
 #include <chrono>
 #include <filesystem>
 
@@ -98,4 +100,44 @@ TEST(nnMode, TogglingAutonomyOrExitingMenuRestartsActionCooldown) {
     EXPECT_FALSE(pacer.ready(resumed));
     EXPECT_FALSE(pacer.ready(resumed + std::chrono::milliseconds(999)));
     EXPECT_TRUE(pacer.ready(resumed + std::chrono::seconds(1)));
+}
+
+TEST(nnMode, AgentPrefersUnvisitedAccessibleCellsAndKeepsLevelMemory) {
+    using THIRDEYE::nn::OnlinePolicy;
+    const mode::Pose pose{10, 10, 0, 3};
+    const std::array<bool, OnlinePolicy::kActions> allowed{
+        true, true, false, true, true, true
+    };
+    std::unordered_set<uint32_t> visited{
+        mode::visitKey(pose),
+        mode::visitKey({10, 9, 0, 3}),
+        mode::visitKey({11, 10, 0, 3})
+    };
+    auto frontier = mode::frontierActions(pose, allowed, visited);
+    EXPECT_FALSE(frontier[0]);
+    EXPECT_TRUE(frontier[1]);
+    EXPECT_FALSE(frontier[2]);
+    EXPECT_FALSE(frontier[3]);
+    EXPECT_FALSE(frontier[4]);
+    EXPECT_FALSE(frontier[5]);
+    const auto otherLevel = mode::frontierActions({10, 10, 0, 4}, allowed, visited);
+    EXPECT_TRUE(otherLevel[0]);
+    EXPECT_TRUE(otherLevel[1]);
+    EXPECT_TRUE(otherLevel[3]);
+    visited.insert(mode::visitKey({10, 11, 0, 3}));
+    frontier = mode::frontierActions(pose, allowed, visited);
+    EXPECT_TRUE(std::none_of(frontier.begin(), frontier.end(),
+                             [](bool value) { return value; }));
+}
+
+TEST(nnMode, LearnsValidStairTransitionsButNotScriptedTurns) {
+    const mode::Pose before{8, 8, 1, 2};
+    const auto descended = mode::evaluateOutcome(before, {24, 20, 1, 3},
+                                                 0, false);
+    EXPECT_TRUE(descended.success);
+    EXPECT_DOUBLE_EQ(descended.reward, 2.0);
+    const auto turningDuringTransition = mode::evaluateOutcome(
+        before, {24, 20, 2, 3}, 5, true);
+    EXPECT_FALSE(turningDuringTransition.success);
+    EXPECT_LT(turningDuringTransition.reward, 0);
 }

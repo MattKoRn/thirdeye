@@ -225,3 +225,23 @@ TEST(nnCheckpoint, LoadsLegacyV1BrainAndUpgradesOnNextSave) {
     EXPECT_EQ(restored.successes(), 0u);
     EXPECT_EQ(restored.failures(), 0u);
 }
+
+TEST(nnCheckpoint, AdaptiveRateDecaysAndRestoresWithSamples) {
+    TempCheckpoint tmp;
+    OnlinePolicy brain;
+    const auto initial = brain.learningRate();
+    EXPECT_NEAR(initial, 0.10, 1e-12);
+    for (int i = 0; i < 350; ++i)
+        ASSERT_TRUE(brain.reinforce(kContext, 0, 1.8, true));
+    const auto decayed = brain.learningRate();
+    EXPECT_LT(decayed, initial);
+    EXPECT_GT(decayed, 0.025);
+    std::string error;
+    ASSERT_TRUE(brain.save(tmp.path, error)) << error;
+    OnlinePolicy restored;
+    ASSERT_TRUE(restored.load(tmp.path, error)) << error;
+    EXPECT_DOUBLE_EQ(restored.learningRate(), decayed);
+    EXPECT_EQ(restored.weights(), brain.weights());
+    ASSERT_TRUE(restored.reinforce(kContext, 2, -1.25, false));
+    EXPECT_LT(restored.learningRate(), decayed);
+}

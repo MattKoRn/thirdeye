@@ -47,6 +47,10 @@ public:
     uint64_t samples() const { return samples_; }
     double meanLoss() const { return meanLoss_; }
     double meanReward() const { return meanReward_; }
+    // Derived from the persisted sample count so training resumes seamlessly.
+    double learningRate() const {
+        return 0.025 + 0.075 / (1.0 + static_cast<double>(samples_) / 250.0);
+    }
     uint64_t successes() const { return successes_; }
     uint64_t failures() const { return failures_; }
     double successRate() const {

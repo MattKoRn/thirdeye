@@ -6,6 +6,7 @@
 
 #include <SDL3/SDL_filesystem.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -22,6 +23,9 @@ namespace {
 constexpr uint16_t kKernelClass = 1382;
 constexpr uint16_t kDungeonClass = 1381;
 constexpr uint64_t kAutoSaveInterval = 32;
+constexpr std::array<const char *, OnlinePolicy::kActions> kActionNames{
+    "forward", "back", "strafe-left", "strafe-right", "turn-left", "turn-right"
+};
 
 struct State {
     OnlinePolicy brain;
@@ -31,6 +35,7 @@ struct State {
     bool trainingEnabled = true; // autonomous outcome training only
     bool autonomous = false;
     bool dirty = false;
+    bool checkpointPresent = false;
     bool storageWarningLogged = false;
     ActionPacer pacer;
     uint64_t savedSamples = 0;
@@ -81,6 +86,9 @@ void autoSave(bool force) {
     if (g.brain.save(g.file, error)) {
         g.savedSamples = g.brain.samples();
         g.dirty = false;
+        g.checkpointPresent = true;
+        std::cout << "[nn] checkpoint saved samples=" << g.savedSamples
+                  << " path=" << g.file.string() << '\n';
     } else {
         reportStorageError(error);
     }
@@ -121,11 +129,6 @@ bool context(VM::ObjectSystem &objects, OnlinePolicy::Features &features,
     return true;
 }
 
-uint32_t locationKey(const Pose &p) {
-    return (static_cast<uint32_t>(p.level) << 10) |
-           (static_cast<uint32_t>(p.y) << 5) | static_cast<uint32_t>(p.x);
-}
-
 bool canMove(int action, const std::array<bool, 4> &blocked) {
     switch (action) {
     case 0: return !blocked[0]; // forward
@@ -162,12 +165,19 @@ void initialize() {
         if (g.brain.load(g.file, error)) {
             g.savedSamples = g.brain.samples();
             g.dirty = false;
+            g.checkpointPresent = true;
+            std::cout << "[nn] checkpoint restored samples=" << g.savedSamples
+                      << " rate=" << g.brain.learningRate()
+                      << " path=" << g.file.string() << '\n';
         } else {
             // A malformed brain must not be overwritten by an empty model.
             reportStorageError("existing brain rejected (" + error + ")");
             g.storageReady = false;
         }
     }
+    if (g.storageReady && !g.checkpointPresent)
+        std::cout << "[nn] new brain checkpoint=new path="
+                  << g.file.string() << '\n';
 }
 
 void shutdown() {
@@ -209,6 +219,13 @@ double meanLoss() { initialize(); return g.brain.meanLoss(); }
 
 double meanReward() { initialize(); return g.brain.meanReward(); }
 double successRate() { initialize(); return g.brain.successRate(); }
+double learningRate() { initialize(); return g.brain.learningRate(); }
+const char *checkpointStatus() {
+    initialize();
+    if (!g.storageReady) return "unavailable";
+    if (g.dirty) return "pending";
+    return g.checkpointPresent ? "saved" : "new";
+}
 
 bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
     initialize();
@@ -242,17 +259,19 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive) {
         g.pending.reset();
         return;
     }
-    const bool firstVisit = g.visited.insert(locationKey(current)).second;
+    const bool firstVisit = g.visited.insert(visitKey(current)).second;
 
     // Only reward or penalize a move AFTER the SOP engine has processed it.
     if (g.pending) {
         const auto previous = *g.pending;
         g.pending.reset();
-        const bool sameLevel = previous.before.level == current.level;
+        const int levelDelta = std::abs(previous.before.level - current.level);
         const int travel = std::abs(previous.before.x - current.x) +
                            std::abs(previous.before.y - current.y);
-        // Disregard teleports and scripted state resets (not our action).
-        if (sameLevel && travel <= 1) {
+        // Learn adjacent-floor exits but skip same-level teleports and
+        // multi-floor scripted resets unrelated to normal movement.
+        if ((levelDelta == 0 && travel <= 1) ||
+            (levelDelta == 1 && previous.action < 4)) {
             const Outcome result = evaluateOutcome(previous.before, current,
                                                    previous.action, firstVisit);
             if (result.success) {
@@ -264,15 +283,21 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive) {
                 g.failurePose = previous.before;
                 g.failedActions[static_cast<std::size_t>(previous.action)] = true;
             }
-            if (g.trainingEnabled &&
-                g.brain.reinforce(previous.features, previous.action,
-                                  result.reward, result.success)) {
-                g.dirty = true;
-                autoSave(false);
-                if (g.brain.samples() % 50 == 0)
-                    std::cout << "[nn] self-learning: " << g.brain.samples()
-                              << " attempts, success=" << g.brain.successRate() * 100.0
-                              << "%, reward=" << g.brain.meanReward() << '\n';
+            if (g.trainingEnabled) {
+                const double rate = g.brain.learningRate();
+                if (g.brain.reinforce(previous.features, previous.action,
+                                      result.reward, result.success)) {
+                    g.dirty = true;
+                    autoSave(false);
+                    std::cout << "[nn] learn action="
+                              << kActionNames[static_cast<std::size_t>(previous.action)]
+                              << " success=" << (result.success ? "yes" : "no")
+                              << " reward=" << result.reward
+                              << " rate=" << rate
+                              << " samples=" << g.brain.samples()
+                              << " mean_reward=" << g.brain.meanReward()
+                              << " checkpoint=" << checkpointStatus() << '\n';
+                }
             }
         }
     }
@@ -289,6 +314,9 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects, bool uiActive) {
         g.failurePose.reset();
         g.failedActions.fill(false);
     }
+    const auto frontier = frontierActions(current, allowed, g.visited);
+    if (std::any_of(frontier.begin(), frontier.end(), [](bool f) { return f; }))
+        allowed = frontier;
     std::uniform_real_distribution<double> random(0.0, 1.0);
     const int action = g.brain.select(features, allowed, random(g.rng), random(g.rng));
     if (action < 0) {
@@ -308,10 +336,18 @@ bool saveTo(const std::filesystem::path &path, std::string &error) {
 bool loadFrom(const std::filesystem::path &path, std::string &error) {
     initialize();
     if (!g.brain.load(path, error)) return false;
+    // Do not train the imported weights on feedback from a pre-import action.
+    g.pending.reset();
+    g.failurePose.reset();
+    g.failedActions.fill(false);
+    g.pacer.reset(ActionPacer::Clock::now());
     // Treat an imported model as unsaved to the default Documents location.
     g.dirty = true;
     g.savedSamples = g.brain.samples();
     autoSave(true);
+    std::cout << "[nn] checkpoint imported samples=" << g.brain.samples()
+              << " rate=" << g.brain.learningRate()
+              << " checkpoint=" << checkpointStatus() << '\n';
     return true;
 }
 
