@@ -1,4 +1,5 @@
 #include "combat_mode.hpp"
+#include "magic_observation.hpp"
 #include "tactical_memory.hpp"
 
 #include "../vm/events.hpp"
@@ -9,6 +10,7 @@
 #include <iostream>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -18,6 +20,7 @@ constexpr uint16_t kKernelClass = 1382;
 constexpr uint16_t kEntityClass = 1370;
 constexpr uint16_t kPcClass = 1369;
 constexpr uint16_t kNpcClass = 1622;
+constexpr uint32_t kRightHandOffset = 81 + 16 * 2;
 constexpr uint64_t kSaveEvery = 16;
 constexpr uint64_t kTacticSaveEvery = 8;
 constexpr std::array<int, 3> kPartySlots{0, 1, 3};
@@ -33,6 +36,9 @@ struct Pending {
     int hpBefore = 0;
     tactics::Signature signature{};
     int observationTicks = 0;
+    int caster = -1;
+    int item = -1;
+    int chargesBefore = -1;
 };
 struct State {
     OnlinePolicy brain;
@@ -51,6 +57,11 @@ struct State {
     bool mouseDown = false;
     uint64_t savedSamples = 0;
     std::optional<Pending> pending;
+    // Ambiguous zero-damage magic uses are suppressed for this target/pose:
+    // don't repeatedly burn host actions on an unverified click.
+    std::optional<mode::Pose> unresolvedPose;
+    int unresolvedNpc = -1;
+    std::set<tactics::Signature> unresolvedMagic;
     std::mt19937 rng{std::random_device{}()};
 };
 State g;
@@ -173,9 +184,39 @@ uint16_t exportedSpellId(VM::ObjectSystem &objects, int item,
     return 0;
 }
 
+// Read only an explicitly EXPORTED charge counter. The similarly named
+// item-data "value/bonus" byte has different meanings across item classes
+// and must never be assumed to be a wand charge count.
+int exportedCharges(VM::ObjectSystem &objects, int item, uint16_t itemClass) {
+    constexpr std::array<const char *, 8> tags{
+        "B:charges", "W:charges", "B:charge", "W:charge",
+        "B:uses", "W:uses", "B:charges_left", "W:charges_left"
+    };
+    uint16_t cls = itemClass;
+    for (int depth = 0; depth < 12; ++depth) {
+        const auto *descriptor = objects.classByNumber(cls);
+        if (!descriptor) break;
+        for (const char *tag : tags) {
+            const auto it = descriptor->exportedVars.find(tag);
+            if (it == descriptor->exportedVars.end()) continue;
+            try {
+                const int size = tag[0] == 'B' ? 1 : 2;
+                if (auto *p = objects.classStaticPtr(item, cls, it->second, size)) {
+                    return size == 1 ? p[0] : static_cast<int>(
+                        static_cast<uint16_t>(p[0] | (p[1] << 8)));
+                }
+            } catch (const std::exception &) {}
+        }
+        if (descriptor->header.parent == cls ||
+            descriptor->header.parent > 65535) break;
+        cls = static_cast<uint16_t>(descriptor->header.parent);
+    }
+    return -1; // unknown, not zero: don't invent charges
+}
+
 std::optional<tactics::Signature> equippedTactic(
     VM::ObjectSystem &objects, int pc, uint16_t enemyClass) {
-    const int item = word(objects, pc, kPcClass, 81 + 16 * 2);
+    const int item = word(objects, pc, kPcClass, kRightHandOffset);
     if (item < 0 || objects.classOf(item) == 0xffff)
         return std::nullopt;
     const auto itemClass = objects.classOf(item);
@@ -190,6 +231,10 @@ std::optional<tactics::Signature> equippedTactic(
     else if (objects.isSubclassOf(itemClass, 1688))
         kind = tactics::Kind::Melee;
     else
+        return std::nullopt;
+    // Known-empty wands are never used; unknown charges do not imply empty.
+    if (kind == tactics::Kind::WandSpell &&
+        exportedCharges(objects, item, itemClass) == 0)
         return std::nullopt;
     const uint16_t spellId =
         (kind == tactics::Kind::ScrollSpell ||
@@ -284,9 +329,15 @@ void flushLearning() {
 void shutdown() {
     flushLearning();
     g.pending.reset();
+    g.unresolvedMagic.clear();
 }
 
-void cancel() { g.pending.reset(); }
+void cancel() {
+    g.pending.reset();
+    g.unresolvedMagic.clear();
+    g.unresolvedPose.reset();
+    g.unresolvedNpc = -1;
+}
 bool waiting() { return g.pending.has_value(); }
 
 void release(VM::EventSystem &events) {
@@ -306,9 +357,54 @@ void observe(VM::ObjectSystem &objects, const mode::Pose &pose, bool training) {
         return;
     const int hpAfter = word(objects, p.npc, kNpcClass, 3);
     // Wait for delayed weapon and magic projectiles before declaring a miss.
-    if (hpAfter == p.hpBefore && p.observationTicks++ < 2) {
+    if (hpAfter == p.hpBefore && p.observationTicks++ < 4) {
         g.pending = p;
         return;
+    }
+    const bool spellItem =
+        p.signature.kind == tactics::Kind::ScrollSpell ||
+        p.signature.kind == tactics::Kind::WandSpell;
+    if (spellItem) {
+        // Scrolls are one-use and can disappear or leave the equipped hand.
+        // Wands may expose a named counter; no raw static byte is guessed.
+        const int hand = p.caster >= 0 &&
+                         objects.classOf(p.caster) != 0xffff
+            ? word(objects, p.caster, kPcClass, kRightHandOffset) : -1;
+        const bool scrollSpent =
+            p.signature.kind == tactics::Kind::ScrollSpell &&
+            (hand != p.item || objects.classOf(p.item) == 0xffff);
+        const int chargesAfter =
+            p.signature.kind == tactics::Kind::WandSpell &&
+            hand == p.item && objects.classOf(p.item) != 0xffff
+            ? exportedCharges(objects, p.item, p.signature.itemClass) : -1;
+        const bool resourceSpent =
+            scrollSpent || magic::spentCharge(p.chargesBefore, chargesAfter);
+        const auto evidence =
+            magic::evaluate(p.hpBefore, hpAfter, resourceSpent);
+        if (evidence == magic::Result::Invalid) return;
+        if (evidence == magic::Result::Unverified) {
+            g.unresolvedPose = p.pose;
+            g.unresolvedNpc = p.npc;
+            g.unresolvedMagic.insert(p.signature);
+            std::cout << "[nn] magic outcome=unverified enemy_class="
+                      << p.signature.enemy << " item_class="
+                      << p.signature.itemClass << " spell_id="
+                      << p.signature.spellId
+                      << " reason=no-damage-and-no-confirmed-resource-use"
+                      << " learned=no retry=suppressed-until-target-or-pose-change\n";
+            return;
+        }
+        std::cout << "[nn] magic outcome="
+                  << (evidence == magic::Result::Damaged
+                      ? "damaged" : "no-damage-resource-spent")
+                  << " enemy_class=" << p.signature.enemy
+                  << " spell_id=" << p.signature.spellId
+                  << " charge_before=" << p.chargesBefore
+                  << " charge_after=" << chargesAfter
+                  << " resource_spent=" << (resourceSpent ? "yes" : "unknown")
+                  << " possible_resistance_or_miss="
+                  << (evidence == magic::Result::NoDamageSpent ? "yes" : "no")
+                  << '\n';
     }
     const auto outcome = mode::evaluateCombatOutcome(p.hpBefore, hpAfter);
     if (!outcome) return;
@@ -349,12 +445,31 @@ bool attack(VM::EventSystem &events, VM::ObjectSystem &objects,
             const mode::Pose &pose, const std::array<bool, 4> &blocked) {
     const auto enemy = frontTarget(objects, pose);
     if (!enemy) return false;
+    if (!g.unresolvedPose || *g.unresolvedPose != pose ||
+        g.unresolvedNpc != enemy->id) {
+        g.unresolvedMagic.clear();
+        g.unresolvedPose = pose;
+        g.unresolvedNpc = enemy->id;
+    }
     OnlinePolicy::Features features{};
     std::array<bool, OnlinePolicy::kActions> allowed{};
     std::vector<tactics::Candidate> candidates;
     if (!attackerFeatures(objects, pose, blocked, enemy->hp, enemy->enemyClass,
                           features, allowed, candidates))
         return false;
+    candidates.erase(std::remove_if(candidates.begin(), candidates.end(),
+        [](const tactics::Candidate &candidate) {
+            return g.unresolvedMagic.contains(candidate.signature);
+        }), candidates.end());
+    if (candidates.empty()) return false;
+    // Keep policy availability consistent with the actual remaining options.
+    allowed.fill(false);
+    for (const auto &candidate : candidates) {
+        const auto it = std::find(kPartySlots.begin(), kPartySlots.end(),
+                                  candidate.partySlot);
+        if (it != kPartySlots.end())
+            allowed[static_cast<std::size_t>(it - kPartySlots.begin())] = true;
+    }
     std::uniform_real_distribution<double> random(0.0, 1.0);
     // Both models learn from measured NPC HP changes. The enemy-specific UCB
     // selector still explores distinct weapons/spells; the online combat
@@ -378,7 +493,16 @@ bool attack(VM::EventSystem &events, VM::ObjectSystem &objects,
     events.mouseButton(false, true);
     g.mouseDown = true;
     const auto signature = candidates[static_cast<std::size_t>(choice)].signature;
-    g.pending = Pending{features, pose, action, enemy->id, enemy->hp, signature};
+    const int kernel = objects.firstObjectOfClass(kKernelClass);
+    const int caster = kernel >= 0
+        ? word(objects, kernel, kKernelClass, 229 + selectedSlot * 2) : -1;
+    const int item = caster >= 0
+        ? word(objects, caster, kPcClass, kRightHandOffset) : -1;
+    const int chargesBefore =
+        signature.kind == tactics::Kind::WandSpell && item >= 0
+        ? exportedCharges(objects, item, signature.itemClass) : -1;
+    g.pending = Pending{features, pose, action, enemy->id, enemy->hp,
+                        signature, 0, caster, item, chargesBefore};
     std::cout << "[nn] combat experiment="
               << tactics::kindName(signature.kind)
               << " item_class=" << signature.itemClass
@@ -387,6 +511,7 @@ bool attack(VM::EventSystem &events, VM::ObjectSystem &objects,
               << " enemy_class=" << signature.enemy
               << " target=" << enemy->id << " hp=" << enemy->hp
               << " previous_trials=" << g.weaknesses.experience(signature).trials
+              << " charge_before=" << chargesBefore
               << " policy_preferred_pc=" << preferredSlot
               << '\n';
     return true;

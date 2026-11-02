@@ -356,10 +356,17 @@ against that NPC's **SOP class**. The experiment key records enemy class,
 equipped item class, spell-like kind, and the spell identifier if that
 identifier is explicitly exported by the item class; otherwise spell ID 0
 means not verified. Combat actions use the actual right-click item event
-and measure NPC HP afterward, allowing up to three action ticks for delayed
-spell/projectile results. A zero-damage result counts as a failed experiment;
-missing target observations, a changed party pose, or an interrupted UI
-sequence are **not** learned as a confirmed hit or miss.
+and measure NPC HP afterward, allowing up to five action ticks for delayed
+spell/projectile results. For magic-item actions, an observed HP decrease
+confirms damage. If HP is unchanged, a **confirmed spent scroll or decrease
+in a named exported wand charge counter** is required before recording a
+zero-damage experiment. This is evidence of a non-damaging attempt, **not**
+proof of immunity (it could be a miss or a non-damaging effect). If neither
+damage nor resource use can be observed, the attempt is unverified, is not
+trained as resistance, and that tactic is suppressed for the current monster
+and pose so combat can try another available action. Known-empty wands are
+excluded; unknown charges never default to zero. Invalid NPC readings,
+changed party pose, or interrupted menus are excluded from feedback.
 
 Per-enemy experience automatically saves to
 `Documents/ThirdeyeNN/weaknesses.ckpt` every eight confirmed attacks and
@@ -373,11 +380,16 @@ weights and `combat.ckpt` combat policy weights are unchanged.
 running damage average.
 
 **Limits:** Spell scrolls are consumed when used; the agent does not yet
-restock them. In-hand spellbook/holy-symbol spells require a separate
-level/spell menu and are deliberately **not** auto-selected until those
-menus have verified action coordinates; this iteration supports different
-weapon and wand/scroll spell **items**, not arbitrary memorized spells.
-Spell IDs are separated only when exposed by actual game class exports.
+restock them. Runtime test rails verify that spellbook/holy-symbol activation
+uses magic M:29 and that direct magic M:54 reaches part of the cast chain,
+but the M:54 synthetic harness with sp=0 did not confirm target damage
+(`docs/progress.md`); neither identifies a safe memorized-slot dispatch
+key or a complete, verified menu-selection path. The autonomous controller
+therefore does **not** invent spell-menu coordinates or cast arbitrary
+memorized spells. This iteration makes supported equipped wand/scroll spells
+resource-aware and learns credible zero-damage experiments; full book/symbol
+casting, non-damaging status effects and spell replenishment remain future
+work. Spell IDs are separated only when exposed by actual class exports.
 As before, this combat path is EOB3-only; Dungeon Hack has different VM
 class layouts and UI coordinates.
 

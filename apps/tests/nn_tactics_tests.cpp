@@ -1,6 +1,7 @@
 #include "gtest/gtest.h"
 #include "../thirdeye/nn/tactical_memory.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
+#include "../thirdeye/nn/magic_observation.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -141,6 +142,53 @@ TEST(nnTactics, AttackerPreferenceCannotOverrideDifferentSpellExperiment) {
     }
     EXPECT_EQ(weaknesses.select(candidates, 0.0, 1), 2);
     EXPECT_EQ(weaknesses.select(candidates, 0.0, 99), 2);
+}
+
+TEST(nnTactics, MagicEvidenceRequiresObservedDamageOrResourceUse) {
+    namespace magic = THIRDEYE::nn::magic;
+    EXPECT_EQ(magic::evaluate(30, 20, false), magic::Result::Damaged);
+    EXPECT_EQ(magic::evaluate(30, 30, true), magic::Result::NoDamageSpent);
+    EXPECT_EQ(magic::evaluate(30, 30, false), magic::Result::Unverified);
+    EXPECT_EQ(magic::evaluate(30, 31, true), magic::Result::Invalid);
+    EXPECT_EQ(magic::evaluate(0, 0, true), magic::Result::Invalid);
+    EXPECT_EQ(magic::evaluate(30, -1, true), magic::Result::Invalid);
+    EXPECT_TRUE(magic::spentCharge(5, 4));
+    EXPECT_TRUE(magic::spentCharge(1, 0));
+    EXPECT_FALSE(magic::spentCharge(5, 5));
+    EXPECT_FALSE(magic::spentCharge(-1, 0));
+    EXPECT_FALSE(magic::spentCharge(5, -1));
+}
+
+TEST(nnTactics, ConfirmedNoDamageMagicIsRememberedButUnverifiedIsNot) {
+    namespace magic = THIRDEYE::nn::magic;
+    TempMemory t;
+    tactics::Memory memory;
+    const tactics::Signature wand{1904, 1376, tactics::Kind::WandSpell, 7};
+    const tactics::Signature sword{1904, 1324, tactics::Kind::Melee};
+    const std::vector<tactics::Candidate> candidates{{0, wand}, {1, sword}};
+
+    // An unchanged enemy HP value with no confirmed wand charge loss must
+    // never teach "enemy resistance" or overwrite learned effectiveness.
+    if (magic::evaluate(20, 20, false) == magic::Result::NoDamageSpent)
+        memory.learn(wand, 0);
+    EXPECT_EQ(memory.samples(), 0u);
+    EXPECT_EQ(memory.experience(wand).trials, 0u);
+
+    for (int i = 0; i < 24; ++i) {
+        if (magic::evaluate(20, 20, true) == magic::Result::NoDamageSpent)
+            memory.learn(wand, 0);
+        memory.learn(sword, 6);
+    }
+    EXPECT_EQ(memory.experience(wand).hits, 0u);
+    EXPECT_EQ(memory.experience(wand).trials, 24u);
+    EXPECT_EQ(memory.select(candidates, 0.0), 1);
+    std::string error;
+    ASSERT_TRUE(memory.save(t.file, error)) << error;
+    tactics::Memory restored;
+    ASSERT_TRUE(restored.load(t.file, error)) << error;
+    EXPECT_EQ(restored.samples(), 48u);
+    EXPECT_EQ(restored.experience(wand).hits, 0u);
+    EXPECT_EQ(restored.select(candidates, 0.0), 1);
 }
 
 TEST(nnTactics, DamagedCheckpointDoesNotEraseLiveLearning) {
