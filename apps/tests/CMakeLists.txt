@@ -9,6 +9,7 @@ set(UNITTEST
     savegame_tests.cpp
     chargen_tests.cpp
     clip_tests.cpp
+    display_tests.cpp
     codetable_tests.cpp
     bitmapmask_tests.cpp
     dhmaze_tests.cpp
