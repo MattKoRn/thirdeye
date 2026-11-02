@@ -99,10 +99,15 @@ GRAPHICS::Graphics::Graphics(uint16_t scale, bool /*renderer*/, bool windowed) {
 
 void GRAPHICS::Graphics::toggleFullscreen() {
 	const bool fullscreen = (SDL_GetWindowFlags(mWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+	if (!fullscreen)
+		SDL_SetWindowBordered(mWindow, false);
 	if (!SDL_SetWindowFullscreen(mWindow, !fullscreen)) {
 		std::cerr << "Could not toggle fullscreen: " << SDL_GetError() << std::endl;
+		return;
 	}
-	// The STRETCH logical presentation follows the resized window automatically.
+	// SDL3 fullscreen transitions can be asynchronous. pumpHost restores the
+	// decorated border on SDL_EVENT_WINDOW_LEAVE_FULLSCREEN, once windowed.
+	// STRETCH presentation follows the new display/window size automatically.
 }
 
 GRAPHICS::Graphics::~Graphics() {
