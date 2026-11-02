@@ -1,5 +1,7 @@
 """Dependency-free installer regression tests; no game data or downloads needed."""
 import io
+import hashlib
+import http.client
 import json
 from pathlib import Path
 import sys
@@ -7,9 +9,37 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import urllib.error
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import install
+
+
+class FakeDownloadResponse(io.BytesIO):
+    def __init__(self, data, status=200, headers=None, disconnect=False):
+        super().__init__(data)
+        self.status = status
+        self.headers = headers or {}
+        self.disconnect = disconnect
+        self.read_calls = 0
+
+    def read(self, n=-1):
+        self.read_calls += 1
+        if self.disconnect and self.read_calls == 2:
+            raise http.client.IncompleteRead(b"")
+        return super().read(n)
+
+
+def sample_zip_file():
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("DATA1.ARJ", b"pretend ARJ")
+    return output.getvalue()
+
+
+def archive_file_info(filename, data):
+    return {"name": filename, "size": str(len(data)),
+            "sha1": hashlib.sha1(data).hexdigest()}
 
 
 class InstallerTests(unittest.TestCase):
@@ -111,6 +141,133 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((dest / "HACK.RES").exists())
             with self.assertRaises(RuntimeError):
                 install.copy_game(src, dest, "hack")
+
+    def test_archive_http_500_retries_then_caches_without_redownloading(self):
+        contents = sample_zip_file()
+        meta = archive_file_info("EOB3_Disk4.zip", contents)
+        temporary_error = urllib.error.HTTPError(
+            "https://archive.org/download/item/file", 500,
+            "Internal Server Error", {}, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            with patch.object(install.urllib.request, "urlopen",
+                              side_effect=[temporary_error,
+                                           FakeDownloadResponse(contents)]) as get, \
+                 patch.object(install.time, "sleep") as sleep:
+                result = install.archive_download_file("eye-of-the-beholder-3",
+                                                       meta, cache)
+                self.assertEqual(result.read_bytes(), contents)
+                self.assertEqual(get.call_count, 2)
+                sleep.assert_called_once_with(2)
+                result_again = install.archive_download_file(
+                    "eye-of-the-beholder-3", meta, cache)
+                self.assertEqual(result_again, result)
+                self.assertEqual(get.call_count, 2)
+                self.assertFalse((cache / "EOB3_Disk4.zip.part").exists())
+
+    def test_archive_resume_after_midstream_disconnection(self):
+        contents = sample_zip_file()
+        meta = archive_file_info("EOB3_Disk4.zip", contents)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            part = cache / "EOB3_Disk4.zip.part"
+            initial = FakeDownloadResponse(contents[:25], disconnect=True)
+            resumed = FakeDownloadResponse(
+                contents[25:], status=206,
+                headers={"Content-Range": "bytes 25-{}/{}".format(
+                    len(contents) - 1, len(contents))})
+            with patch.object(install.urllib.request, "urlopen",
+                              side_effect=[initial, resumed]) as get, \
+                 patch.object(install.time, "sleep"):
+                target = install.archive_download_file(
+                    "eye-of-the-beholder-3", meta, cache)
+            self.assertEqual(target.read_bytes(), contents)
+            self.assertFalse(part.exists())
+            self.assertEqual(get.call_count, 2)
+            self.assertEqual(get.call_args.args[0].headers["Range"], "bytes=25-")
+
+    def test_archive_server_ignores_resume_and_restarts_safely(self):
+        contents = sample_zip_file()
+        meta = archive_file_info("EOB3_Disk4.zip", contents)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            (cache / "EOB3_Disk4.zip.part").write_bytes(b"partial old data")
+            with patch.object(install.urllib.request, "urlopen",
+                              return_value=FakeDownloadResponse(contents)) as get:
+                target = install.archive_download_file(
+                    "eye-of-the-beholder-3", meta, cache)
+            self.assertEqual(target.read_bytes(), contents)
+            self.assertEqual(
+                get.call_args.args[0].headers["Range"],
+                "bytes={}-".format(len(b"partial old data")))
+
+    def test_archive_http_403_is_not_retried(self):
+        contents = sample_zip_file()
+        meta = archive_file_info("EOB3_Disk4.zip", contents)
+        forbidden = urllib.error.HTTPError(
+            "https://archive.org/download/item/file", 403, "Forbidden", {}, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(install.urllib.request, "urlopen",
+                              side_effect=forbidden) as get, \
+                 patch.object(install.time, "sleep") as sleep:
+                with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+                    install.archive_download_file("eye-of-the-beholder-3",
+                                                  meta, Path(tmp))
+                get.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_archive_retries_exhausted_keeps_partial_and_gives_help(self):
+        contents = sample_zip_file()
+        meta = archive_file_info("EOB3_Disk4.zip", contents)
+        server_error = urllib.error.HTTPError(
+            "https://archive.org/download/item/file", 500, "Server Error", {}, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            (cache / "EOB3_Disk4.zip.part").write_bytes(contents[:12])
+            with patch.object(install.urllib.request, "urlopen",
+                              side_effect=server_error) as get, \
+                 patch.object(install.time, "sleep") as sleep:
+                with self.assertRaisesRegex(RuntimeError, "after 5 attempts"):
+                    install.archive_download_file("eye-of-the-beholder-3",
+                                                  meta, cache)
+            self.assertEqual(get.call_count, 5)
+            self.assertEqual(sleep.call_count, 4)
+            self.assertEqual((cache / "EOB3_Disk4.zip.part").read_bytes(),
+                             contents[:12])
+
+    def test_archive_invalid_cached_file_is_replaced(self):
+        contents = sample_zip_file()
+        meta = archive_file_info("EOB3_Disk4.zip", contents)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            (cache / "EOB3_Disk4.zip").write_bytes(b"bad zip data")
+            with patch.object(install.urllib.request, "urlopen",
+                              return_value=FakeDownloadResponse(contents)):
+                target = install.archive_download_file(
+                    "eye-of-the-beholder-3", meta, cache)
+            self.assertEqual(target.read_bytes(), contents)
+
+    def test_archive_download_cache_outside_temporary_extraction(self):
+        contents = sample_zip_file()
+        meta = archive_file_info("EOB3_Disk1.zip", contents)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            stage = root / "temporary stage"
+            stage.mkdir()
+            metadata = {"metadata": {"title": "test"}, "files": [meta]}
+            with patch.object(install, "archive_metadata", return_value=metadata), \
+                 patch.object(install, "archive_choices", return_value=[meta]), \
+                 patch.object(install, "confirm_rights", return_value=True), \
+                 patch.object(install, "expand_archives", return_value=stage), \
+                 patch.object(install.urllib.request, "urlopen",
+                              return_value=FakeDownloadResponse(contents)):
+                result = install.archive_download("eob3", stage, home)
+                self.assertEqual(result, stage)
+                self.assertTrue((home / "downloads" / "archive.org" /
+                                 "eye-of-the-beholder-3" /
+                                 "EOB3_Disk1.zip").is_file())
+                self.assertTrue((stage / "DATA1.ARJ").is_file())
 
     def test_archive_file_selection(self):
         metadata = {"files": [{"name": "EOB3_Disk{}.zip".format(n)} for n in range(1, 5)]}
