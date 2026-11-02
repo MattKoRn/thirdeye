@@ -2093,6 +2093,16 @@ bool THIRDEYE::chargen::runChargenScreen(GRAPHICS::Graphics &gfx,
 			SDL_ConvertEventToRenderCoordinates(gfx.getRenderer(), &event);
 			if (event.type == SDL_EVENT_QUIT)
 				throw THIRDEYE::runtime::QuitRequested{};
+			if (event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+				SDL_SetWindowBordered(gfx.getWindow(), true);
+				continue;
+			}
+			if (event.type == SDL_EVENT_KEY_DOWN &&
+			    event.key.scancode == SDL_SCANCODE_F11) {
+				if (!event.key.repeat)
+					gfx.toggleFullscreen();
+				continue;
+			}
 			Step before = state.step;
 			int beforeRace = state.raceCursor;
 			int beforeClass = state.classCursor;
