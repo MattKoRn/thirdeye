@@ -100,6 +100,17 @@ abandonware labels are NOT evidence of a redistribution license; use a copy
 you legitimately own if in doubt. Internet Archive files and formats may
 change; failed extraction tells you to import a working installed directory.
 
+Temporary Archive.org server errors (HTTP 500/502/503/504, plus rate-limit
+HTTP 429 and timeouts) are retried with bounded backoff. Verified completed
+disk ZIPs are kept between runs instead of being deleted with the temporary
+extraction directory; interrupted downloads continue using HTTP Range
+requests when supported (or restart safely when not). The cache lives under
+the user's Thirdeye app-data folder in downloads/archive.org/<item>/, e.g.
+%LOCALAPPDATA%\Thirdeye\downloads\archive.org\eye-of-the-beholder-3 on Windows.
+A failed download never installs partial game assets or overwrites saves.
+If the server remains unavailable after five attempts, try again later or
+import your own local game files with --source (PowerShell: -Source).
+
 Repeat installer runs are incremental: the installer keeps build/installer
 and its compiled object files, skips unchanged CMake configuration and package
 installation, and asks Ninja/MSBuild to recompile only changed source files
