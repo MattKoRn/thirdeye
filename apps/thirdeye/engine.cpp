@@ -1,6 +1,7 @@
 #include "engine.hpp"
 #include "automap.hpp"
 #include "control.hpp"
+#include "nn/online_mode.hpp"
 #include "resources/res.hpp"
 #include "resources/gffi.hpp"
 #include "sound/sound.hpp"
@@ -48,6 +49,7 @@ THIRDEYE::Engine::Engine(Files::ConfigurationManager& configurationManager) :
 }
 
 THIRDEYE::Engine::~Engine() {
+	THIRDEYE::nn::mode::shutdown();
 	THIRDEYE::control::shutdown();
 }
 
@@ -368,6 +370,25 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 					gfx.toggleFullscreen();
 				break;
 			}
+			// F1: hand movement control to the neural brain, or take it back.
+			// Never relay this host-side hotkey into the SOP virtual machine.
+			if (ev.key.scancode == SDL_SCANCODE_F1) {
+				if (!ev.key.repeat) {
+					const bool enabled = THIRDEYE::nn::mode::toggle();
+					static std::string normalTitle;
+					static bool gotTitle = false;
+					if (!gotTitle) {
+						normalTitle = SDL_GetWindowTitle(gfx.getWindow());
+						gotTitle = true;
+					}
+					const std::string title = normalTitle +
+					    (enabled ? " [Neural AUTO - F1 to stop]" : "");
+					SDL_SetWindowTitle(gfx.getWindow(), title.c_str());
+					std::cout << "[nn] Neural control " <<
+					    (enabled ? "ON" : "OFF") << " (F1)" << std::endl;
+				}
+				break;
+			}
 			// The SOP code expects DOS/BIOS key codes: printable keys are ASCII
 			// (SDL keysyms already are, incl. ESC=0x1b/Enter=0x0d), but the arrow
 			// keys are (scancode << 8) with a zero ASCII byte. SDL's own arrow
@@ -439,6 +460,8 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 				}
 			}
 			if (key != 0) {
+				if (!uiScreen && THIRDEYE::nn::mode::consumesManualKey(key))
+					break; // F1 mode owns movement, other UI keys still work
 				events.postEvent(0, VM::SYS_KEYDOWN, key);
 				THIRDEYE::control::observeKey(key, objects);
 				if (gRecorder.enabled) {
@@ -577,6 +600,8 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	}
 	// Live control channel: polled here so a client's inject/dump lands in
 	// the same pump slot AUTOWALK would use. No-op when THIRDEYE_CTL unset.
+	THIRDEYE::nn::mode::pump(events, objects,
+		THIRDEYE::runtime::uiScreenActive(objects));
 	THIRDEYE::control::pump(&gfx, events, objects);
 	// Debug: THIRDEYE_AUTOKEY=<decimal SDL scancode> pushes a synthetic key-down
 	// with that physical scancode every ~40 pumps, so the real key handler (WASD/QE/
@@ -1590,6 +1615,8 @@ void THIRDEYE::Engine::handleBootWall(const VM::VmError &e,
 // Initialise and enter main loop.
 void THIRDEYE::Engine::go() {
 	gBootStart = std::chrono::steady_clock::now();
+	// Restore the Documents/ThirdeyeNN brain even without a control socket.
+	THIRDEYE::nn::mode::initialize();
 	// Live control channel (docs/control_channel.md). Env var only for now;
 	// no CLI flag until someone asks. Zero cost when unset.
 	if (const char *p = std::getenv("THIRDEYE_CTL"))

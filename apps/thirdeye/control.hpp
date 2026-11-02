@@ -24,7 +24,7 @@ void init(const std::string &path);
 void pump(GRAPHICS::Graphics *gfx, VM::EventSystem &events,
           VM::ObjectSystem &objects);
 
-// Supervised learning hook for real player keypresses. No-op if the socket is off.
+// Supervised learning hook for real player keypresses; works without a socket.
 void observeKey(int32_t code, VM::ObjectSystem &objects);
 
 // Close socket and unlink the file. Safe to call multiple times.

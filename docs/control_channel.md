@@ -286,7 +286,7 @@ pattern.
 
 ## Optional online movement neural network
 
-The live socket (`THIRDEYE_CTL`) now provides an **opt-in** online
+The game includes an **opt-in** online
 softmax movement policy over the current dungeon pose, facing, and local wall
 map. Six actions are supported: forward (4800), back (5000), strafe left/right
 (4b00/4d00), turn left/right (4700/4900). This is supervised imitation of
@@ -301,19 +301,49 @@ shipped with the game.
   resumes it.
 - `nn predict` reports the movement scancode and confidence.
   `nn step` executes one prediction; `nn auto on` executes at most
-  one per 40 host pumps until `nn auto off`. Autoplay is **off by default**
-  and requires at least 8 examples and 55% model confidence.
+  one per 40 host pumps until `nn auto off`. Autoplay is **off by default**;
+  an untrained model uses a simple wall-aware fallback.
 - `nn save /path/model.ckpt` and `nn load /path/model.ckpt` use
   validated, versioned, checksummed checkpoints. A failed load leaves the
   active model unchanged; a successful load replaces weights immediately.
   Save writes and syncs a sibling temporary file before atomic rename.
-- Set `THIRDEYE_NN_CHECKPOINT=/path/model.ckpt` at launch to
-  restore an existing model automatically, checkpoint after every 32
-  additional examples, and save outstanding learning at shutdown. The
-  checkpoint directory must already exist. Progress is logged at 25-example
-  intervals and after saves/loads.
+- Automatic brain persistence is described below; manual socket load/save
+  paths do not change the automatic location.
 
-This feature is intentionally local to the POSIX control socket and idle when
-the socket is not enabled. It does not control the game without explicit
-`nn step` or `nn auto on`. Neural tests are in
-`apps/tests/nn_checkpoint_tests.cpp`.
+The optional socket commands are available on POSIX platforms. The learner,
+F1 control, and automatic persistence work on Windows, macOS and Linux,
+without enabling a control socket. Neural tests are in
+`apps/tests/nn_checkpoint_tests.cpp` and `apps/tests/nn_mode_tests.cpp`.
+
+
+## F1 neural takeover + silent Documents persistence
+
+Press **F1** while running the game to toggle neural movement takeover.
+F1 is a host hotkey (not forwarded to AESOP); the window title shows
+`[Neural AUTO - F1 to stop]` while enabled. F1 again restores direct
+movement control. Autopilot is off when the game starts, and pauses itself
+while any menu, camp panel, or other UI screen is active. Non-movement
+keys and in-game UI continue to work.
+
+The brain is loaded automatically on startup from the operating system's
+Documents directory (including redirected Documents folders):
+`Documents/ThirdeyeNN/brain.ckpt`. The directory is created on
+first launch. An existing brain's version, checksum, metrics, and weights
+are verified before applying it; corrupt checkpoints are not overwritten
+with a new blank model. Learning while manually playing is enabled by
+default, independent of the Unix control socket. The brain is saved
+atomically and **silently** after 32 training samples and on clean exit,
+when changed. Errors are printed once, but successful background saves
+and loads are not logged.
+
+On an untrained model F1 still takes control: it performs conservative
+wall-aware movement until enough learned behaviour is available.
+Known-blocked learned moves are rejected and handled by the safe fallback.
+The game never automatically takes over until the player presses F1
+(or the explicitly issued `nn auto on` socket command).
+
+Socket commands `nn status`, `nn train on/off`,
+`nn teach <key>`, `nn predict`, `nn step`,
+`nn auto on/off`, `nn save <path>`, and
+`nn load <path>` continue to work and now share the same F1 brain.
+Explicit save/load paths do not redirect automatic Documents persistence.
