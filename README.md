@@ -21,7 +21,11 @@ on disk throughout.
   save slot. The original shipped without any map.
 * Modern movement: WASD/QE alongside the original arrow keys and mouse, bound
   by physical key position so they land right on QWERTY/AZERTY/QWERTZ alike.
-* Windowed play at any integer scale (--scale=N) instead of fullscreen VGA.
+* Borderless fullscreen at desktop resolution by default: the original 320x200
+  game image stretches edge to edge with no outer black bars, including on
+  widescreen monitors (which changes the original aspect ratio). Press F11
+  to toggle fullscreen/windowed, or start with --windowed --scale=N for a
+  normal, resizable window. The game keeps its original UI hit coordinates.
 * Skip the wait: --skip-intro / --skip-menu / --load-save=N jump straight into
   the game, and the intro cinematic auto-plays only on first boot (still
   available from the menu any time).
@@ -51,6 +55,15 @@ If your organization enforces execution policy through Group Policy, use
 the Python entry point instead (if Python 3 is already installed):
 
     py -3 scripts/install.py
+
+The installed game starts in **borderless fullscreen** at your desktop
+resolution, filling the display without letterbox bars. F11 switches between
+fullscreen and a decorated, resizable window. For a windowed launch, add
+`--windowed --scale=3` to the engine arguments; --scale only controls the
+initial window size. The standalone launcher also offers a saved "Start in a
+window" checkbox. Fullscreen stretching may slightly alter the original
+320:200 aspect ratio on widescreen screens; the entire game and HUD remain
+visible.
 
 The installer builds the C++ engine in build/installer using CMake, installs
 it under the current user's app-data directory, and creates a desktop shortcut
