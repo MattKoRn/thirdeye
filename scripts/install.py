@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import filecmp
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,9 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -438,7 +441,133 @@ def archive_choices(game, metadata):
     return selected
 
 
-def archive_download(game, stage):
+RETRYABLE_HTTP = {408, 429, 500, 502, 503, 504}
+DOWNLOAD_ATTEMPTS = 5
+
+
+def archive_file_valid(path, metadata):
+    """Trust cached archives only after checking the metadata's size/hash."""
+    path = Path(path)
+    if not path.is_file():
+        return False
+    size = int(metadata.get("size", "0") or 0)
+    expected_sha1 = str(metadata.get("sha1", "") or "").lower()
+    if path.stat().st_size > MAX_DOWNLOAD or (size and path.stat().st_size != size):
+        return False
+    if expected_sha1:
+        digest = hashlib.sha1()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == expected_sha1
+    # Metadata without a checksum: validate ZIP CRCs before reusing a cache.
+    if not size:
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return archive.testzip() is None
+    except (OSError, zipfile.BadZipFile, RuntimeError):
+        return False
+
+
+def archive_download_file(item, metadata, cache):
+    """Retry transient failures and resume verified partial Archive.org downloads."""
+    filename = metadata["name"]
+    if filename != Path(filename).name or "/" in filename or "\\" in filename:
+        fail("Unsafe archive filename in metadata: " + filename)
+    size = int(metadata.get("size", "0") or 0)
+    if size > MAX_DOWNLOAD:
+        fail("Archive file is too large: " + filename)
+    cache = Path(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    target = cache / filename
+    partial = cache / (filename + ".part")
+    if archive_file_valid(target, metadata):
+        info("Using cached verified download: " + filename)
+        return target
+    if target.exists():
+        info("Discarding invalid cached download: " + filename)
+        target.unlink()
+    if archive_file_valid(partial, metadata):
+        partial.replace(target)
+        info("Recovered completed download: " + filename)
+        return target
+
+    url = ("https://archive.org/download/" +
+           urllib.parse.quote(item, safe="") + "/" +
+           urllib.parse.quote(filename, safe=""))
+    last_error = None
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        offset = partial.stat().st_size if partial.exists() else 0
+        if offset > MAX_DOWNLOAD or (size and offset > size):
+            partial.unlink()
+            offset = 0
+        headers = {"User-Agent": "Thirdeye installer/1.0",
+                   "Accept-Encoding": "identity"}
+        if offset:
+            headers["Range"] = "bytes={}-".format(offset)
+            info("Resuming {} at byte {} (attempt {}/{})".format(
+                filename, offset, attempt, DOWNLOAD_ATTEMPTS))
+        else:
+            info("Downloading {} (attempt {}/{})".format(
+                filename, attempt, DOWNLOAD_ATTEMPTS))
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=120) as response:
+                status = getattr(response, "status", 200)
+                if offset and status == 206:
+                    content_range = response.headers.get("Content-Range", "")
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", content_range)
+                    if (not match or int(match.group(1)) != offset or
+                            (size and match.group(3) != "*" and
+                             int(match.group(3)) != size)):
+                        fail("Server returned an invalid Content-Range for " + filename)
+                    mode = "ab"
+                elif status == 200:
+                    if offset:
+                        info("Server did not support resume; restarting " + filename)
+                    mode = "wb"
+                    offset = 0
+                else:
+                    fail("Unexpected HTTP {} for {}".format(status, filename))
+                received = offset
+                with partial.open(mode) as out:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        received += len(chunk)
+                        if received > MAX_DOWNLOAD or (size and received > size):
+                            fail("Download exceeds expected size: " + filename)
+                        out.write(chunk)
+            if archive_file_valid(partial, metadata):
+                partial.replace(target)  # publish only verified downloads
+                return target
+            if size and partial.stat().st_size < size:
+                last_error = RuntimeError("Incomplete download: " + filename)
+                # Keep partial bytes for the next Range request.
+            else:
+                partial.unlink(missing_ok=True)  # bad checksum, do not resume
+                last_error = RuntimeError("Archive checksum/ZIP validation failed: " + filename)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_HTTP:
+                fail("{}: HTTP {} (not retryable). Import a local copy if available."
+                     .format(filename, exc.code))
+            last_error = exc
+        except (urllib.error.URLError, http.client.IncompleteRead,
+                ConnectionError, TimeoutError) as exc:
+            last_error = exc
+        if attempt < DOWNLOAD_ATTEMPTS:
+            delay = min(2 ** attempt, 16)
+            info("{}: temporary download failure ({}). Retrying in {}s; "
+                 "completed downloads remain cached.".format(filename, last_error, delay))
+            time.sleep(delay)
+    fail("Unable to download {} after {} attempts: {}. Partial files remain at {}. "
+         "Retry later or import a legitimately owned local copy via --source."
+         .format(filename, DOWNLOAD_ATTEMPTS, last_error, cache))
+
+
+def archive_download(game, stage, home):
     item = GAMES[game][2]
     info("Inspecting https://archive.org/details/" + item)
     metadata = archive_metadata(item)
@@ -448,31 +577,11 @@ def archive_download(game, stage):
          str(metadata.get("metadata", {}).get("licenseurl", "none")))
     if not confirm_rights():
         fail("Archive download cancelled. You can import your own copy instead.")
+    # Keep verified downloads across installer runs, outside TemporaryDirectory.
+    cache = Path(home) / "downloads" / "archive.org" / item
     for f in selected:
-        filename = f["name"]
-        size = int(f.get("size", "0") or 0)
-        if size > MAX_DOWNLOAD:
-            fail("Archive file is too large: " + filename)
-        url = "https://archive.org/download/" + urllib.parse.quote(item) + "/" + \
-              urllib.parse.quote(filename)
-        target = stage / Path(filename).name
-        info("Downloading " + filename)
-        digest = hashlib.sha1()
-        count = 0
-        with urllib.request.urlopen(
-                urllib.request.Request(url, headers={"User-Agent": "Thirdeye installer/1.0"}),
-                timeout=120) as response, target.open("wb") as out:
-            while chunk := response.read(1024 * 1024):
-                count += len(chunk)
-                if count > MAX_DOWNLOAD:
-                    fail("Download is larger than permitted")
-                digest.update(chunk)
-                out.write(chunk)
-        if size and size != count:
-            fail("Incomplete archive download: " + filename)
-        if f.get("sha1") and digest.hexdigest().lower() != f["sha1"].lower():
-            fail("Archive SHA-1 did not match: " + filename)
-        safe_zip_extract(target, stage)
+        source = archive_download_file(item, f, cache)
+        safe_zip_extract(source, stage)
     return expand_archives(stage, game)
 
 
@@ -610,7 +719,7 @@ def install_data(home, game, already, args):
     with tempfile.TemporaryDirectory(prefix="thirdeye-assets-") as folder:
         stage = Path(folder)
         if method == "archive":
-            src = archive_download(game, stage)
+            src = archive_download(game, stage, home)
         else:
             path = args.source or input("Path to your installed game folder or archive: ").strip().strip('"')
             src = source_directory(path, game, stage)
