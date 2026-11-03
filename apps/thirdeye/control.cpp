@@ -1,5 +1,6 @@
 #include "control.hpp"
 #include "nn/online_mode.hpp"
+#include "runtime/internal.hpp"
 
 #include <string>
 #include <vector>
@@ -163,7 +164,7 @@ std::string handle(const std::vector<std::string> &tok,
     // The same brain is shared with F1 gameplay mode on every platform.
     if (verb == "nn") {
         if (tok.size() < 2)
-            return "err nn <status|teach|train|predict|step|auto|save|load|spell|food|mouse>\n";
+            return "err nn <status|advice|train|predict|step|auto|save|load|spell|food>\n";
         const std::string &sub = tok[1];
         if (sub == "status" && tok.size() == 2)
             return "nn samples=" + std::to_string(nn::mode::samples()) +
@@ -185,33 +186,57 @@ std::string handle(const std::vector<std::string> &tok,
                    " food_probe=" + nn::mode::foodProbeStatus() +
                    " food_calibrations=" +
                        std::to_string(nn::mode::foodCalibrations()) +
-                   " mouse_owner=" + (nn::mode::ownsMouse() ? "neural" : "player") +
-                   " mouse_state=" + nn::mode::mouseState() +
-                   " mouse_moves=" + std::to_string(nn::mode::mouseMoves()) +
-                   " mouse_clicks=" + std::to_string(nn::mode::mouseClicks()) +
-                   " mouse_aborts=" + std::to_string(nn::mode::mouseAborts()) +
-                   " mouse_screens=" + std::to_string(nn::mode::mouseScreens()) +
                    " tactic_samples=" + std::to_string(nn::mode::tacticalSamples()) +
                    " enemy_tactics=" + std::to_string(nn::mode::knownWeaknesses()) +
                    " tactic_checkpoint=" + nn::mode::tacticalCheckpointStatus() +
                    " spell_probe=" + nn::mode::spellProbeStatus() +
                    " self_train=" + (nn::mode::training() ? "on" : "off") +
-                   " auto=" + (nn::mode::active() ? "on" : "off") + "\nok\n";
+                   " auto=" + (nn::mode::active() ? "on" : "off") +
+                   " advice_open=" + (nn::mode::adviceMenuOpen() ? "yes" : "no") +
+                   " advice_generation=" + std::to_string(nn::mode::adviceMenuGeneration()) +
+                   " advice_choices=" + std::to_string(nn::mode::adviceMenuCount()) +
+                   "\nok\n";
         if (sub == "train" && tok.size() == 3 &&
             (tok[2] == "on" || tok[2] == "off")) {
             nn::mode::setTraining(tok[2] == "on");
             return "ok\n";
         }
-        if (sub == "mouse" && tok.size() == 3 && tok[2] == "status")
-            return "nn mouse owner=" +
-                   std::string(nn::mode::ownsMouse() ? "neural" : "player") +
-                   " state=" + nn::mode::mouseState() +
-                   " moves=" + std::to_string(nn::mode::mouseMoves()) +
-                   " clicks=" + std::to_string(nn::mode::mouseClicks()) +
-                   " aborted=" + std::to_string(nn::mode::mouseAborts()) +
-                   " screens=" + std::to_string(nn::mode::mouseScreens()) +
-                   " calibrated_food_targets=" +
-                   std::to_string(nn::mode::foodCalibrations()) + "\nok\n";
+        if (sub == "advice") {
+            if (tok.size() == 3 && tok[2] == "close") {
+                nn::mode::closeAdviceMenu();
+                return "nn advice menu closed\nok\n";
+            }
+            if (tok.size() == 3 && tok[2] == "open") {
+                if (!nn::mode::adviceMenuOpen() &&
+                    !nn::mode::toggleAdviceMenu(objects,
+                        !runtime::gDungeonHack,
+                        runtime::uiScreenActive(objects)))
+                    return "err native gameplay required or action still executing\n";
+            } else if (tok.size() == 4 && tok[2] == "choose") {
+                int row = 0;
+                if (!parseInt(tok[3], row) || row < 1 || row > 5)
+                    return "err nn advice choose <1..5>\n";
+                if (!nn::mode::chooseAdvice(events, objects, row - 1,
+                        !runtime::gDungeonHack,
+                        runtime::uiScreenActive(objects)))
+                    return "err advice unavailable, stale, or blocked\n";
+                return "nn advice action issued; next batch after observed reward\nok\n";
+            } else if (tok.size() != 3 ||
+                       (tok[2] != "list" && tok[2] != "status" &&
+                        tok[2] != "open")) {
+                return "err nn advice <open|list|choose 1..5|close|status>\n";
+            }
+            std::string out = "nn advice open=" +
+                std::string(nn::mode::adviceMenuOpen() ? "yes" : "no") +
+                " batch=" + std::to_string(nn::mode::adviceMenuGeneration()) +
+                " count=" + std::to_string(nn::mode::adviceMenuCount()) +
+                " last=" + nn::mode::adviceLastResult() + "\n";
+            if (tok[2] != "status")
+                for (int i = 0; i < nn::mode::adviceMenuCount(); ++i)
+                    out += std::to_string(i + 1) + ". " +
+                           nn::mode::adviceMenuLabel(i) + "\n";
+            return out + "ok\n";
+        }
         if (sub == "food") {
             if (tok.size() == 4 &&
                 (tok[2] == "probe" || tok[2] == "recommend" ||
@@ -293,7 +318,7 @@ std::string handle(const std::vector<std::string> &tok,
             return "nn checkpoint loaded samples=" +
                    std::to_string(nn::mode::samples()) + "\nok\n";
         }
-        return "err nn <status|teach|train|predict|step|auto|save|load|spell|food|mouse>\n";
+        return "err nn <status|advice|train|predict|step|auto|save|load|spell|food>\n";
     }
 
     if (verb == "ping") return "ok\n";
