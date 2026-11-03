@@ -149,6 +149,20 @@ uint64_t survivalSamples();
 double survivalMeanReward();
 double survivalSuccessRate();
 const char *survivalCheckpointStatus();
+
+// EOB3 food outcome verification: arm while holding a known ration/apple/
+// iron ration in the kernel cursor; the native food-plate click is performed
+// through the existing game UI. Reward only if food increases and cursor
+// consumption is observed. No potion or guessed click coordinates are used.
+bool queueFoodProbe(VM::ObjectSystem &objects, int partySlot,
+                    std::string &error);
+const char *foodProbeStatus();
+uint64_t foodSamples();
+double foodMeanReward();
+const char *foodCheckpointStatus();
+// Apply saved item-class preferences to real carried food types; diagnostic
+// recommendation only until a food-use actuator has been verified.
+std::string foodRecommendation(VM::ObjectSystem &objects, int partySlot);
 const char *checkpointStatus();
 uint64_t combatSamples();
 double combatMeanReward();
