@@ -911,7 +911,7 @@ void GRAPHICS::Graphics::redrawFrozenFrame() {
 	SDL_RenderTexture(mRenderer, mPresentTex, nullptr, nullptr);
 }
 
-void GRAPHICS::Graphics::update() {
+void GRAPHICS::Graphics::update(bool present) {
 	bool updateScene = false;
 	mClock = SDL_GetTicks();
 	mSleep = 0;
@@ -1200,7 +1200,7 @@ void GRAPHICS::Graphics::update() {
 	SDL_UpdateTexture(mPresentTex, nullptr, mScreen->pixels, mScreen->pitch);
 	SDL_RenderClear(mRenderer);
 	SDL_RenderTexture(mRenderer, mPresentTex, nullptr, nullptr);
-	SDL_RenderPresent(mRenderer);
+	if (present) SDL_RenderPresent(mRenderer);
 
 	// Keep a copy of what the player now sees -- pixelFade()'s dissolve source.
 	if (mLastShown == nullptr)
