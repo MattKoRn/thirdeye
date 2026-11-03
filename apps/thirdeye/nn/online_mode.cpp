@@ -1,4 +1,5 @@
 #include "online_mode.hpp"
+#include "shared_brain.hpp"
 #include "combat_mode.hpp"
 #include "food_learning.hpp"
 #include "food_actuator.hpp"
@@ -698,11 +699,7 @@ void initialize() {
         reportStorageError("Documents folder could not be located");
         return;
     }
-    // Both games use exactly the same model/reward interface, but keep
-    // their policy weights in separate v2 checkpoint files. No migration or
-    // overwrite of existing EOB3 brain.ckpt is required.
-    const auto file = brainFileForDocuments(documents,
-                                           runtime::gDungeonHack);
+    const auto file = brainFileForDocuments(documents);
     const auto folder = file.parent_path();
     std::error_code ec;
     std::filesystem::create_directories(folder, ec);
@@ -711,24 +708,23 @@ void initialize() {
         return;
     }
     g.file = file;
-    g.storageReady = true;
-    if (std::filesystem::exists(g.file, ec) && !ec) {
-        std::string error;
-        if (g.brain.load(g.file, error)) {
-            g.savedSamples = g.brain.samples();
-            g.dirty = false;
-            g.checkpointPresent = true;
-            std::cout << "[nn] checkpoint restored samples=" << g.savedSamples
-                      << " rate=" << g.brain.learningRate()
-                      << " path=" << g.file.string() << '\n';
-        } else {
-            // A malformed brain must not be overwritten by an empty model.
-            reportStorageError("existing brain rejected (" + error + ")");
-            g.storageReady = false;
-        }
-    }
-    if (g.storageReady && !g.checkpointPresent)
-        std::cout << "[nn] new brain checkpoint=new path="
+    const auto restored = restoreSharedBrain(g.brain, documents);
+    g.storageReady = restored.ready;
+    g.checkpointPresent = restored.restored;
+    g.savedSamples = g.brain.samples();
+    if (!restored.warning.empty())
+        std::cerr << "[nn] shared brain migration: "
+                  << restored.warning << '\n';
+    if (!restored.ready)
+        reportStorageError("shared brain unavailable (" + restored.error + ")");
+    else if (restored.restored)
+        std::cout << "[nn] " << (restored.migrated ? "merged legacy brains" :
+                                "shared brain restored")
+                  << " samples=" << g.savedSamples
+                  << " rate=" << g.brain.learningRate()
+                  << " path=" << g.file.string() << '\n';
+    else
+        std::cout << "[nn] new shared brain checkpoint=new path="
                   << g.file.string() << '\n';
     // Separate version-2 policy sidecar. Old movement/combat/weakness
     // checkpoints stay byte-for-byte compatible, and native nn saves do not
@@ -809,6 +805,35 @@ void flushLearning() {
     autoSaveFood(true);
     autoSaveFoodActuator(true);
     combat::flushLearning();
+}
+
+void resetForNewGame() {
+    initialize();
+    // Game saves and maze generation reset native state, NOT the persistent
+    // policy. Commit outstanding evidence before clearing session-only map
+    // visits, failed moves and queued actuators.
+    flushLearning();
+    combat::cancel();
+    g.adviceOpen = false;
+    g.adviceReopen = false;
+    g.advicePending.reset();
+    g.adviceBatch = {};
+    g.adviceResult = "New game started; neural learning was preserved.";
+    g.pending.reset();
+    g.retreatPending.reset();
+    g.foodTrial.reset();
+    g.foodStatus = "idle";
+    g.failedFoodRegions.clear();
+    g.failurePose.reset();
+    g.failedActions.fill(false);
+    g.visited.clear();
+    g.pacer.reset(ActionPacer::Clock::now());
+    if (g.spellProbe.shouldOpen()) g.spellProbe.fail();
+    for (auto &value : g.spellBaselines) value = {};
+    std::cout << "[nn] new game: cleared route memory, retained shared brain"
+              << " samples=" << g.brain.samples()
+              << " checkpoint=" << (g.storageReady ? "ready" : "unavailable")
+              << '\n';
 }
 
 void shutdown() {
