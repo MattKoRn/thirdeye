@@ -149,6 +149,16 @@ TEST(nnDungeonHack, SameNeuralOutcomeModelLearnsVerifiedDHMovement) {
     EXPECT_EQ(dhBrain.failures(), 1u);
 }
 
+TEST(nnDungeonHack, GameSpecificBrainFilesDoNotOverwriteEOB3) {
+    const std::filesystem::path documents("/user/Documents");
+    const auto eob = mode::brainFileForDocuments(documents);
+    const auto hack = mode::brainFileForDocuments(documents, true);
+    EXPECT_EQ(eob.filename().string(), "brain.ckpt");
+    EXPECT_EQ(hack.filename().string(), "brain-dungeon-hack.ckpt");
+    EXPECT_NE(eob, hack);
+    EXPECT_EQ(eob.parent_path(), hack.parent_path());
+}
+
 TEST(nnAdvice, GeneratesAtMostFiveLiveReachableActions) {
     namespace advice = THIRDEYE::nn::advice;
     THIRDEYE::nn::OnlinePolicy brain;
