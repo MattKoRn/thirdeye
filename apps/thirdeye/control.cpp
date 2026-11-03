@@ -167,7 +167,9 @@ std::string handle(const std::vector<std::string> &tok,
             return "err nn <status|advice|train|predict|step|auto|save|load|spell|food>\n";
         const std::string &sub = tok[1];
         if (sub == "status" && tok.size() == 2)
-            return "nn samples=" + std::to_string(nn::mode::samples()) +
+            return "nn game=" + std::string(runtime::gDungeonHack
+                                               ? "dungeon-hack" : "eob3") +
+                   " samples=" + std::to_string(nn::mode::samples()) +
                    " reward=" + std::to_string(nn::mode::meanReward()) +
                    " success=" + std::to_string(nn::mode::successRate()) +
                    " rate=" + std::to_string(nn::mode::learningRate()) +
@@ -226,7 +228,9 @@ std::string handle(const std::vector<std::string> &tok,
                         tok[2] != "open")) {
                 return "err nn advice <open|list|choose 1..5|close|status>\n";
             }
-            std::string out = "nn advice open=" +
+            std::string out = "nn advice game=" +
+                std::string(runtime::gDungeonHack ? "dungeon-hack" : "eob3") +
+                " open=" +
                 std::string(nn::mode::adviceMenuOpen() ? "yes" : "no") +
                 " batch=" + std::to_string(nn::mode::adviceMenuGeneration()) +
                 " count=" + std::to_string(nn::mode::adviceMenuCount()) +
