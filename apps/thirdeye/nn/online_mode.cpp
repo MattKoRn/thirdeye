@@ -656,7 +656,9 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
             g.brain.reinforce(trial.features, trial.action,
                               result->reward, result->success)) {
             g.dirty = true;
-            autoSave(false);
+            // F1 is user-directed and infrequent: persist each verified
+            // objective instead of risking 31 unsaved samples on interruption.
+            autoSave(true);
         }
         const std::string objective =
             advice::objectiveLabel(trial.target, trial.action, false);
