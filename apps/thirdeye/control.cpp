@@ -163,7 +163,7 @@ std::string handle(const std::vector<std::string> &tok,
     // The same brain is shared with F1 gameplay mode on every platform.
     if (verb == "nn") {
         if (tok.size() < 2)
-            return "err nn <status|teach|train|predict|step|auto|save|load|spell|food>\n";
+            return "err nn <status|teach|train|predict|step|auto|save|load|spell|food|mouse>\n";
         const std::string &sub = tok[1];
         if (sub == "status" && tok.size() == 2)
             return "nn samples=" + std::to_string(nn::mode::samples()) +
@@ -185,6 +185,11 @@ std::string handle(const std::vector<std::string> &tok,
                    " food_probe=" + nn::mode::foodProbeStatus() +
                    " food_calibrations=" +
                        std::to_string(nn::mode::foodCalibrations()) +
+                   " mouse_owner=" + (nn::mode::ownsMouse() ? "neural" : "player") +
+                   " mouse_state=" + nn::mode::mouseState() +
+                   " mouse_moves=" + std::to_string(nn::mode::mouseMoves()) +
+                   " mouse_clicks=" + std::to_string(nn::mode::mouseClicks()) +
+                   " mouse_aborts=" + std::to_string(nn::mode::mouseAborts()) +
                    " tactic_samples=" + std::to_string(nn::mode::tacticalSamples()) +
                    " enemy_tactics=" + std::to_string(nn::mode::knownWeaknesses()) +
                    " tactic_checkpoint=" + nn::mode::tacticalCheckpointStatus() +
@@ -196,6 +201,15 @@ std::string handle(const std::vector<std::string> &tok,
             nn::mode::setTraining(tok[2] == "on");
             return "ok\n";
         }
+        if (sub == "mouse" && tok.size() == 3 && tok[2] == "status")
+            return "nn mouse owner=" +
+                   std::string(nn::mode::ownsMouse() ? "neural" : "player") +
+                   " state=" + nn::mode::mouseState() +
+                   " moves=" + std::to_string(nn::mode::mouseMoves()) +
+                   " clicks=" + std::to_string(nn::mode::mouseClicks()) +
+                   " aborted=" + std::to_string(nn::mode::mouseAborts()) +
+                   " calibrated_food_targets=" +
+                   std::to_string(nn::mode::foodCalibrations()) + "\nok\n";
         if (sub == "food") {
             if (tok.size() == 4 &&
                 (tok[2] == "probe" || tok[2] == "recommend" ||
@@ -277,7 +291,7 @@ std::string handle(const std::vector<std::string> &tok,
             return "nn checkpoint loaded samples=" +
                    std::to_string(nn::mode::samples()) + "\nok\n";
         }
-        return "err nn <status|teach|train|predict|step|auto|save|load|spell|food>\n";
+        return "err nn <status|teach|train|predict|step|auto|save|load|spell|food|mouse>\n";
     }
 
     if (verb == "ping") return "ok\n";
