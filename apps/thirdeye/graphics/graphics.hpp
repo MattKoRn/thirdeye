@@ -331,7 +331,9 @@ public:
 	void loadMouse(std::vector<uint8_t> &bitmap, uint16_t index);
 
 	uint32_t getSleep();
-	void update();
+	// Allow the F1 overlay to compose on the game frame before its first
+	// present; never flash the bare game beneath the menu.
+	void update(bool present = true);
 	// Repaint the last game frame without advancing cinematics, fades,
 	// timers or any screen-state machine. Used by the F1 modal advice pause
 	// before drawing interactive SDL overlay rows.
