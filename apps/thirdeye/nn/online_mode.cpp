@@ -743,6 +743,10 @@ bool queueFoodProbe(VM::ObjectSystem &objects, VM::EventSystem &events,
         return false;
     }
     if (g.foodTrial) { error = "native food probe already running"; return false; }
+    if (events.leftButtonDown()) {
+        error = "release the native left mouse button before calibration";
+        return false;
+    }
     if (!runtime::uiScreenActive(objects)) {
         error = "open the target PC's native equipment/food screen first";
         return false;
@@ -833,6 +837,10 @@ bool useCalibratedFood(VM::ObjectSystem &objects, VM::EventSystem &events,
     error.clear();
     if (!g.foodActuatorReady || g.foodActuator.size() == 0) {
         error = "no verified native food click calibration loaded";
+        return false;
+    }
+    if (events.leftButtonDown()) {
+        error = "native left mouse button is already pressed";
         return false;
     }
     if (!runtime::uiScreenActive(objects)) {
