@@ -569,8 +569,19 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
     const int key = OnlinePolicy::keyForAction(trial.action);
     // A queued key is not an executed movement. Give the VM an extra tick
     // after dispatch before evaluating a success or failure.
-    if (now - trial.sent < std::chrono::milliseconds(200) ||
-        events.findEvent(VM::SYS_KEYDOWN, key) >= 0) return;
+    const bool queued = events.findEvent(VM::SYS_KEYDOWN, key) >= 0;
+    if (queued && now - trial.sent >= std::chrono::seconds(3)) {
+        // A key still queued after three seconds was never dispatched.
+        // Remove exactly our own input rather than rewarding a nonexistent
+        // action or letting it execute much later behind the next menu.
+        events.flushEventQueue(0, VM::SYS_KEYDOWN, key);
+        g.advicePending.reset();
+        g.adviceReopen = false;
+        g.adviceResult = "Advice timed out before execution; no learning.";
+        std::cout << "[nn] advice timeout awaiting native key trained=no\n";
+        return;
+    }
+    if (now - trial.sent < std::chrono::milliseconds(200) || queued) return;
     g.advicePending.reset();
     OnlinePolicy::Features currentFeatures{};
     std::array<bool, 4> blocked{};
@@ -1110,6 +1121,10 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     }
     // Observe first: a consumed item must not invalidate its own mouse release.
     observeFoodTrial(objects, events);
+    if (g.adviceOpen && (!eob3 || uiActive)) {
+        g.adviceResult = "Gameplay screen changed; advice menu closed.";
+        closeAdviceMenu();
+    }
     if (g.advicePending) {
         observeAdvice(events, objects, eob3, uiActive);
         return; // never issue an automatic action during advice feedback
