@@ -566,9 +566,13 @@ bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
         events.matchesLeftClickTarget(g.uiNavigation->target);
     if (!foodSafe && !navigateSafe) {
         const int attemptedScreen = target ? target->screen : -1;
-        const bool alreadyConsumed = g.foodTrial == std::nullopt &&
+        const int abortedUiItem = g.uiNavigation ?
+            g.uiNavigation->heldItem : -1;
+        const bool alreadyConsumed = !g.foodTrial &&
                                      g.humanMouse.buttonHeld();
         abortMouse(!alreadyConsumed);
+        if (abortedUiItem >= 0)
+            g.failedUiOpenItem = abortedUiItem;
         if (g.mouseReleasePending) {
             events.mouseButton(false, false);
             g.mouseReleasePending = false;
@@ -580,8 +584,6 @@ bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
             g.foodTrial.reset();
             g.foodStatus = "mouse-target-changed";
         }
-        if (g.uiNavigation && !g.uiNavigation->clicked)
-            g.failedUiOpenItem = g.uiNavigation->heldItem;
         if (!alreadyConsumed)
             std::cout << "[nn] mouse aborted: live UI target changed"
                       << " aborts=" << g.mouseAborts << '\n';
