@@ -130,9 +130,10 @@ bool consumesManualKey(int32_t code);
 
 // F1 displays a modal, player-controlled five-choice neural advice overlay.
 // Works with both EOB3 and Dungeon Hack native level-map observations.
-// Each suggestion is a verified movement key, ranked from current learned
-// policy weights; clicking it executes ONE action, observes real changes,
-// and generates the next batch after training. No mouse takeover.
+// Each suggestion targets a concrete adjacent-cell coordinate or compass
+// heading, derived from the live map and learned weights. Clicking it executes
+// one native action and verifies the EXACT objective before reinforcement.
+// No invented interaction targets and no mouse takeover.
 bool adviceMenuOpen();
 int adviceMenuCount();
 uint64_t adviceMenuGeneration();

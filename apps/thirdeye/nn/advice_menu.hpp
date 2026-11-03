@@ -1,18 +1,19 @@
 #ifndef THIRDEYE_NN_ADVICE_MENU_HPP
 #define THIRDEYE_NN_ADVICE_MENU_HPP
 
-#include "online_policy.hpp"
+#include "online_mode.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace THIRDEYE::nn::advice {
 
-// All suggestions correspond to an actual, supported EOB3 movement key.
-// There is never more than five at once, even if six moves are available.
+// All advice is an observable, one-action coordinate or facing objective.
+// Never advertise unverified item, door or combat interaction actuators.
 constexpr int kMax = 5;
 constexpr int kRowX = 22, kRowY = 51, kRowHeight = 22;
 constexpr int kRowWidth = 276;
@@ -23,6 +24,7 @@ constexpr std::array<const char *, OnlinePolicy::kActions> kNames{
 struct Suggestion {
     int action = -1;
     double score = 0.0;
+    mode::Pose target{};
     std::string label;
 };
 struct Batch {
@@ -32,15 +34,59 @@ struct Batch {
     uint64_t learnedSamples = 0;
 };
 
-// Generate deterministic, individually actionable recommendations from the
-// currently loaded policy's REAL weights, a live 11D observation, passability,
-// and frontier exploration. Ties rotate on subsequent batches to encourage
-// experimenting with other legal moves. Never invent an action beyond 0..5.
+// Derive the exact objective pose from native N/E/S/W coordinates, including
+// Dungeon Hack. Reject off-map targets even if a caller marks a move allowed.
+inline std::optional<mode::Pose> targetFor(const mode::Pose &start, int action) {
+    if (start.x < 0 || start.x >= 32 || start.y < 0 || start.y >= 32 ||
+        start.facing < 0 || start.facing >= 4 || start.level < 0 ||
+        action < 0 || action >= static_cast<int>(OnlinePolicy::kActions))
+        return std::nullopt;
+    mode::Pose target = start;
+    if (action < 4) {
+        constexpr std::array<int, 4> dx{0, 1, 0, -1};
+        constexpr std::array<int, 4> dy{-1, 0, 1, 0};
+        constexpr std::array<int, 4> offsets{0, 2, 3, 1};
+        const int direction = (start.facing + offsets[action]) % 4;
+        target.x += dx[direction];
+        target.y += dy[direction];
+        if (target.x < 0 || target.x >= 32 ||
+            target.y < 0 || target.y >= 32) return std::nullopt;
+    } else {
+        target.facing = (start.facing + (action == 4 ? 3 : 1)) % 4;
+    }
+    return target;
+}
+
+inline std::string objectiveLabel(const mode::Pose &target, int action,
+                                  bool frontier) {
+    const std::string where = "(" + std::to_string(target.x) + "," +
+        std::to_string(target.y) + ") L" + std::to_string(target.level);
+    if (action < 4)
+        return "Move to " + where + (frontier ? " [new]" : "");
+    constexpr std::array<const char *, 4> directions{
+        "north", "east", "south", "west"};
+    return std::string("Face ") + directions[target.facing] + " at " + where;
+}
+
+// A blocked input is a negative outcome; an exact target is a positive
+// outcome. Unexpected displacements, rotations, and level transitions are
+// ambiguous and must never be attributed to this objective.
+inline std::optional<mode::Outcome> objectiveOutcome(
+    int action, const mode::Pose &before, const mode::Pose &target,
+    const mode::Pose &after, bool firstVisit) {
+    const auto expected = targetFor(before, action);
+    if (!expected || *expected != target ||
+        (after != before && after != target)) return std::nullopt;
+    return mode::evaluateOutcome(before, after, action, firstVisit);
+}
+
+// Rank only live executable objectives from learned weights, passability and
+// frontier exploration. No generic tips or invented interactions.
 inline Batch generate(const OnlinePolicy &policy,
                       const OnlinePolicy::Features &features,
                       const std::array<bool, OnlinePolicy::kActions> &allowed,
                       const std::array<bool, OnlinePolicy::kActions> &frontier,
-                      uint64_t generation) {
+                      const mode::Pose &pose, uint64_t generation) {
     Batch batch;
     batch.generation = generation;
     batch.learnedSamples = policy.samples();
@@ -51,6 +97,8 @@ inline Batch generate(const OnlinePolicy &policy,
     int n = 0;
     for (int action = 0; action < static_cast<int>(OnlinePolicy::kActions); ++action) {
         if (!allowed[static_cast<std::size_t>(action)]) continue;
+        const auto target = targetFor(pose, action);
+        if (!target) continue;
         const auto &w = policy.weights();
         double score = 0.0;
         for (int i = 0; i < static_cast<int>(OnlinePolicy::kFeatures); ++i)
@@ -64,10 +112,9 @@ inline Batch generate(const OnlinePolicy &policy,
                                               OnlinePolicy::kActions);
         score += 0.008 * rotation;
         sorted[static_cast<std::size_t>(n++)] =
-            Suggestion{action, score,
-                frontier[static_cast<std::size_t>(action)]
-                ? std::string(kNames[static_cast<std::size_t>(action)]) + " [new]"
-                : std::string(kNames[static_cast<std::size_t>(action)])};
+            Suggestion{action, score, *target,
+                objectiveLabel(*target, action,
+                               frontier[static_cast<std::size_t>(action)])};
     }
     std::stable_sort(sorted.begin(), sorted.begin() + n,
         [](const Suggestion &a, const Suggestion &b) {

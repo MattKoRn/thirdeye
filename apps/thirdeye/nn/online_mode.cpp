@@ -108,6 +108,7 @@ struct State {
         OnlinePolicy::Features features{};
         Pose before{};
         int action = -1;
+        Pose target{};
         ActionPacer::Clock::time_point sent{};
         uint64_t leftClickSerial = 0;
     };
@@ -567,7 +568,7 @@ bool regenerateAdvice(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
             if (g.failedActions[i]) allowed[i] = false;
     const auto frontier = frontierActions(pose, allowed, g.visited);
     auto batch = advice::generate(g.brain, features, allowed, frontier,
-                                  ++g.adviceGeneration);
+                                  pose, ++g.adviceGeneration);
     if (batch.count == 0) return false;
     g.adviceBatch = std::move(batch);
     g.advicePose = pose;
@@ -635,11 +636,14 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
         events.lastLeftClick().serial == trial.leftClickSerial &&
         ((floors == 0 && travel <= 1) ||
          (floors == 1 && trial.action < 4));
-    if (verified) {
-        const bool firstVisit = g.visited.insert(visitKey(current)).second;
-        const Outcome result = evaluateOutcome(
-            trial.before, current, trial.action, firstVisit);
-        if (result.success) {
+    const bool firstVisit = observed && !g.visited.contains(visitKey(current));
+    const auto result = verified
+        ? advice::objectiveOutcome(trial.action, trial.before, trial.target,
+                                   current, firstVisit)
+        : std::optional<Outcome>{};
+    if (result) {
+        if (result->success) {
+            if (trial.action < 4) g.visited.insert(visitKey(current));
             g.failurePose.reset();
             g.failedActions.fill(false);
         } else {
@@ -650,22 +654,22 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
         }
         if (g.trainingEnabled &&
             g.brain.reinforce(trial.features, trial.action,
-                              result.reward, result.success)) {
+                              result->reward, result->success)) {
             g.dirty = true;
             autoSave(false);
         }
-        g.adviceResult = std::string(result.success ? "Worked" : "Blocked") +
-            ": " + advice::kNames[static_cast<std::size_t>(trial.action)] +
-            " | reward " + std::to_string(result.reward);
-        std::cout << "[nn] advice learned action="
-                  << advice::kNames[static_cast<std::size_t>(trial.action)]
-                  << " success=" << (result.success ? "yes" : "no")
-                  << " reward=" << result.reward
+        const std::string objective =
+            advice::objectiveLabel(trial.target, trial.action, false);
+        g.adviceResult = std::string(result->success ? "Reached: " : "Blocked: ") +
+            objective;
+        std::cout << "[nn] advice objective=" << objective
+                  << " reached=" << (result->success ? "yes" : "no")
+                  << " reward=" << result->reward
                   << " samples=" << g.brain.samples()
                   << " mean_reward=" << g.brain.meanReward() << '\n';
     } else {
-        g.adviceResult = "Action result unverified; no neural reward applied.";
-        std::cout << "[nn] advice outcome unverified (screen/pose changed)"
+        g.adviceResult = "Objective unverified; no neural reward applied.";
+        std::cout << "[nn] advice objective unverified (unexpected pose/screen)"
                   << " trained=no\n";
     }
     finishAdviceBatch(objects, eob3, uiActive);
@@ -874,9 +878,12 @@ bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
         closeAdviceMenu();
         return false;
     }
-    const int action =
-        g.adviceBatch.suggestions[static_cast<std::size_t>(row)].action;
-    if (action < 0 || !canMove(action, blocked)) {
+    const auto &objective =
+        g.adviceBatch.suggestions[static_cast<std::size_t>(row)];
+    const int action = objective.action;
+    const auto target = advice::targetFor(current, action);
+    if (!canMove(action, blocked) || !target ||
+        *target != objective.target) {
         g.adviceResult = "Action no longer passable; refreshing advice.";
         regenerateAdvice(objects, eob3, uiActive);
         return false;
@@ -884,12 +891,12 @@ bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
     const int key = OnlinePolicy::keyForAction(action);
     if (key < 0) return false;
     g.advicePending = State::AdvicePending{
-        features, current, action, ActionPacer::Clock::now(),
+        features, current, action, objective.target, ActionPacer::Clock::now(),
         events.lastLeftClick().serial};
     g.adviceOpen = false;
     g.adviceReopen = true;
     events.postEvent(0, VM::SYS_KEYDOWN, key);
-    std::cout << "[nn] advice execute=" << advice::kNames[static_cast<std::size_t>(action)]
+    std::cout << "[nn] advice execute=" << objective.label
               << " batch=" << g.adviceGeneration
               << " native_key=" << key << " awaiting_observed-outcome\n";
     return true;

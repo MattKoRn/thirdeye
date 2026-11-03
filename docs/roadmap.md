@@ -848,3 +848,18 @@ catalog is the biggest single chunk):
 **Opcodes we don't fully understand yet:** the 88 opcodes themselves are documented, but
 several *runtime functions* have only guessed semantics (especially DH-only ones) — these
 need verification against the original `AESOP.EXE`/`INTERP.EXE` behaviour or the docs.
+
+## Objective-only F1 advice (2026-11-03)
+
+- F1 displays at most five real, actionable objectives: move to a specific adjacent
+  (x,y,level) cell or face a specific compass heading at the current position.
+  Both EOB3 and Dungeon Hack use their native map observation and learned
+  movement policy. No unsupported item/door/attack targets are invented.
+- The selected native movement key executes once, and the learner compares the
+  observed pose with the exact advertised objective. Confirmed success and
+  blocking train the separately persisted game-specific models; unexpected
+  displacement, turns or floor changes are unverified and do not train.
+  Exploration memory records newly reached cells only after confirmation.
+- The existing F1 modal pause, player-clickable rows, and return-to-F1 feedback
+  cycle are retained. Multi-step navigation and verified interaction actuators
+  remain future work.

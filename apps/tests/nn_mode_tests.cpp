@@ -114,7 +114,7 @@ TEST(nnDungeonHack, UsesNativeLevelMapNotEOB3ClassOffsets) {
     THIRDEYE::nn::OnlinePolicy dhBrain;
     const std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> frontier{};
     const auto recommendations = THIRDEYE::nn::advice::generate(
-        dhBrain, features, allowed, frontier, 10);
+        dhBrain, features, allowed, frontier, pose, 10);
     EXPECT_LE(recommendations.count, 5);
     for (int i = 0; i < recommendations.count; ++i) {
         const int action = recommendations.suggestions[static_cast<std::size_t>(i)].action;
@@ -168,7 +168,9 @@ TEST(nnAdvice, GeneratesAtMostFiveLiveReachableActions) {
     allowed.fill(true); // six possible movements
     std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> frontier{};
     frontier[0] = true;
-    const auto batch = advice::generate(brain, features, allowed, frontier, 1);
+    const mode::Pose pose{13, 9, 1, 0};
+    const auto batch = advice::generate(
+        brain, features, allowed, frontier, pose, 1);
     ASSERT_EQ(batch.count, 5);
     EXPECT_EQ(batch.learnedSamples, 0u);
     EXPECT_EQ(batch.generation, 1u);
@@ -180,7 +182,13 @@ TEST(nnAdvice, GeneratesAtMostFiveLiveReachableActions) {
         ASSERT_LT(action, 6);
         EXPECT_FALSE(seen[static_cast<std::size_t>(action)]);
         seen[static_cast<std::size_t>(action)] = true;
-        EXPECT_FALSE(batch.suggestions[static_cast<std::size_t>(i)].label.empty());
+        const auto &objective = batch.suggestions[static_cast<std::size_t>(i)];
+        ASSERT_EQ(advice::targetFor(pose, action), objective.target);
+        EXPECT_TRUE(objective.label.starts_with(
+            action < 4 ? "Move to " : "Face "));
+        EXPECT_NE(objective.label.find("(" + std::to_string(objective.target.x) +
+                  "," + std::to_string(objective.target.y) + ")"),
+                  std::string::npos);
         EXPECT_NE(THIRDEYE::nn::OnlinePolicy::keyForAction(action), -1);
     }
     EXPECT_EQ(advice::rowAt(35, advice::kRowY, batch.count), 0);
@@ -199,21 +207,24 @@ TEST(nnAdvice, RetrainsAfterObservedMoveAndChangesNextRanking) {
         2, 3, 0, {false, false, false, false});
     const std::array<bool, 6> allowed{true, true, true, true, true, true};
     const std::array<bool, 6> frontier{};
-    const auto before = advice::generate(brain, features, allowed, frontier, 1);
-    ASSERT_EQ(before.count, 5);
     const mode::Pose origin{2, 3, 0, 0};
+    const auto before = advice::generate(
+        brain, features, allowed, frontier, origin, 1);
+    ASSERT_EQ(before.count, 5);
     const mode::Pose turned{2, 3, 1, 0};
     const mode::Outcome actual = mode::evaluateOutcome(origin, turned, 5, false);
     ASSERT_TRUE(actual.success);
     ASSERT_TRUE(brain.reinforce(features, 5, actual.reward, actual.success));
-    const auto regenerated = advice::generate(brain, features, allowed, frontier, 2);
+    const auto regenerated = advice::generate(
+        brain, features, allowed, frontier, origin, 2);
     EXPECT_EQ(regenerated.generation, 2u);
     EXPECT_EQ(regenerated.learnedSamples, 1u);
     ASSERT_EQ(regenerated.count, 5);
     // More confirmed successful experience increases learned preference.
     for (int i = 0; i < 90; ++i)
         ASSERT_TRUE(brain.reinforce(features, 5, 1.0, true));
-    const auto learned = advice::generate(brain, features, allowed, frontier, 3);
+    const auto learned = advice::generate(
+        brain, features, allowed, frontier, origin, 3);
     ASSERT_EQ(learned.count, 5);
     EXPECT_EQ(learned.learnedSamples, 91u);
     EXPECT_EQ(learned.suggestions[0].action, 5);
@@ -227,16 +238,87 @@ TEST(nnAdvice, RejectsBlockedOrInvalidRecommendations) {
         20, 8, 2, {false, false, false, false});
     const std::array<bool, 6> allowed{false, false, false, true, false, true};
     const std::array<bool, 6> frontier{};
-    const auto small = advice::generate(brain, features, allowed, frontier, 4);
+    const mode::Pose pose{20, 8, 2, 1};
+    const auto small = advice::generate(
+        brain, features, allowed, frontier, pose, 4);
     ASSERT_EQ(small.count, 2);
     for (int i = 0; i < small.count; ++i) {
         const int action = small.suggestions[static_cast<std::size_t>(i)].action;
         EXPECT_TRUE(action == 3 || action == 5);
     }
     const std::array<bool, 6> none{};
-    EXPECT_EQ(advice::generate(brain, features, none, frontier, 5).count, 0);
+    EXPECT_EQ(advice::generate(
+        brain, features, none, frontier, pose, 5).count, 0);
     features[0] = std::numeric_limits<double>::infinity();
-    EXPECT_EQ(advice::generate(brain, features, allowed, frontier, 6).count, 0);
+    EXPECT_EQ(advice::generate(
+        brain, features, allowed, frontier, pose, 6).count, 0);
+}
+
+TEST(nnAdvice, TargetsLiveCellsAndExactFacingAcrossGames) {
+    namespace advice = THIRDEYE::nn::advice;
+    const mode::Pose east{13, 9, 1, 3};
+    EXPECT_EQ(advice::targetFor(east, 0), (mode::Pose{14, 9, 1, 3}));
+    EXPECT_EQ(advice::targetFor(east, 1), (mode::Pose{12, 9, 1, 3}));
+    EXPECT_EQ(advice::targetFor(east, 2), (mode::Pose{13, 8, 1, 3}));
+    EXPECT_EQ(advice::targetFor(east, 3), (mode::Pose{13, 10, 1, 3}));
+    EXPECT_EQ(advice::targetFor(east, 4), (mode::Pose{13, 9, 0, 3}));
+    EXPECT_EQ(advice::targetFor(east, 5), (mode::Pose{13, 9, 2, 3}));
+    EXPECT_FALSE(advice::targetFor({0, 4, 3, 0}, 0));
+    EXPECT_FALSE(advice::targetFor({3, 0, 0, 0}, 0));
+    EXPECT_FALSE(advice::targetFor({3, 4, 5, 0}, 4));
+    EXPECT_FALSE(advice::targetFor(east, 6));
+    THIRDEYE::nn::OnlinePolicy brain;
+    const auto features = THIRDEYE::nn::OnlinePolicy::features(
+        0, 0, 0, {false, false, false, false});
+    std::array<bool, 6> all{}; all.fill(true);
+    const std::array<bool, 6> frontier{};
+    const auto batch = advice::generate(
+        brain, features, all, frontier, {0, 0, 0, 2}, 1);
+    ASSERT_EQ(batch.count, 4); // north and west are off-map
+    for (int i = 0; i < batch.count; ++i) {
+        const auto &objective = batch.suggestions[i];
+        EXPECT_TRUE(objective.label.starts_with("Move to ") ||
+                    objective.label.starts_with("Face "));
+        EXPECT_EQ(advice::targetFor({0, 0, 0, 2}, objective.action),
+                  objective.target);
+    }
+    EXPECT_EQ(advice::generate(
+        brain, features, all, frontier, {-1, 0, 0, 2}, 2).count, 0);
+}
+
+TEST(nnAdvice, LearnsOnlyExactObjectiveOutcomes) {
+    namespace advice = THIRDEYE::nn::advice;
+    const mode::Pose origin{7, 8, 0, 4};
+    const auto destination = advice::targetFor(origin, 0);
+    ASSERT_TRUE(destination);
+    const auto reached = advice::objectiveOutcome(
+        0, origin, *destination, *destination, true);
+    ASSERT_TRUE(reached);
+    EXPECT_TRUE(reached->success);
+    const auto blocked = advice::objectiveOutcome(
+        0, origin, *destination, origin, false);
+    ASSERT_TRUE(blocked);
+    EXPECT_FALSE(blocked->success);
+    EXPECT_FALSE(advice::objectiveOutcome(
+        0, origin, *destination, {7, 8, 1, 4}, false));
+    EXPECT_FALSE(advice::objectiveOutcome(
+        0, origin, *destination, {8, 8, 0, 4}, false));
+    EXPECT_FALSE(advice::objectiveOutcome(
+        0, origin, *destination, {7, 7, 0, 5}, false));
+    EXPECT_FALSE(advice::objectiveOutcome(
+        0, origin, {20, 20, 0, 4}, *destination, true));
+    const auto turn = advice::targetFor(origin, 5);
+    ASSERT_TRUE(turn);
+    const auto turned = advice::objectiveOutcome(5, origin, *turn, *turn, false);
+    ASSERT_TRUE(turned);
+    EXPECT_TRUE(turned->success);
+    THIRDEYE::nn::OnlinePolicy brain;
+    const auto features = THIRDEYE::nn::OnlinePolicy::features(
+        7, 8, 0, {false, false, false, false});
+    EXPECT_TRUE(brain.reinforce(features, 0, reached->reward, reached->success));
+    EXPECT_TRUE(brain.reinforce(features, 0, blocked->reward, blocked->success));
+    EXPECT_EQ(brain.samples(), 2u);
+    EXPECT_EQ(brain.failures(), 1u);
 }
 
 TEST(nnFood, NativeClickCalibrationRejectsAmbiguousOrUnrelatedTargets) {
