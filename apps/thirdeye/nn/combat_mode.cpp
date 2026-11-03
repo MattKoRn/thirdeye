@@ -340,6 +340,10 @@ void cancel() {
 }
 bool waiting() { return g.pending.has_value(); }
 
+bool threatAhead(VM::ObjectSystem &objects, const mode::Pose &pose) {
+    return frontTarget(objects, pose).has_value();
+}
+
 void release(VM::EventSystem &events) {
     if (g.mouseDown) {
         events.mouseButton(false, false);
