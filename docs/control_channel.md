@@ -431,7 +431,7 @@ Press **F1** to toggle an invisible, autonomous neural advice mode **ON**.
 Press **F1** again to switch it **OFF**. The F1 overlay is **not shown**
 while automatic advice runs, and game movement, timers and enemy actions keep
 running normally. Starting from the toggle, the policy gets one decision slot
-every **two seconds of elapsed time** when live gameplay is observable.
+every **one second of elapsed time** when live gameplay is observable.
 It ranks at most five safe, specific adjacent-cell or facing objectives using
 the shared learned policy, chooses the highest-ranked one, queues exactly one
 native movement/turn key, then waits for the SOP VM to consume that key and
@@ -483,7 +483,7 @@ unattended food clicking were removed. The separately available
 previously verified native food region. An optional advanced socket command
 `nn auto on` still enables the existing autonomous movement/combat agent,
 but does **not** take ownership of the player's mouse. F1 now toggles
-the new two-second auto-select advice mode with no visible menu.
+the new one-second auto-select advice mode with no visible menu.
 
 For control clients, manual advice remains available through
 `nn advice open/list/choose/close/status`, and auto-select through
