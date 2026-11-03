@@ -453,7 +453,8 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
         profile.click = pending.click;
         const bool directPcListener =
             profile.click.handlerObject == pending.before.pc &&
-            profile.click.handlerClass == kPcClass;
+            objects.isSubclassOf(
+                static_cast<uint16_t>(profile.click.handlerClass), kPcClass);
         const bool learnedRegion =
             !pending.automatic && g.foodActuatorReady &&
             g.foodActuator.remember(profile);
@@ -857,7 +858,8 @@ bool useCalibratedFood(VM::ObjectSystem &objects, VM::EventSystem &events,
     const auto *profile = g.foodActuator.find(
         slot, before.itemClass, spellScreen(objects));
     if (!profile || profile->click.handlerObject != before.pc ||
-        profile->click.handlerClass != kPcClass ||
+        !objects.isSubclassOf(
+            static_cast<uint16_t>(profile->click.handlerClass), kPcClass) ||
         !events.matchesLeftClickTarget(profile->click)) {
         error = "live food region/target PC does not match verified calibration";
         return false;
