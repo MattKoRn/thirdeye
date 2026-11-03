@@ -424,6 +424,48 @@ M:54 `sp` dispatch mapping still require verified event/bytecode tracing.
 A menu-open/close probe is not an autonomous spell cast; the neural agent
 does not use unverified input mappings or train on these observations.
 
+**Neural AUTO in-game mouse takeover and screen navigation.**
+Press F1 (or `nn auto on`) to hand the **game's mouse** to the neural
+controller, as well as its movement and combat choices. The SDL host stops
+forwarding physical mouse movement and button clicks to EOB3 while AUTO is
+enabled. F1 turns AUTO off and cancels the controller's mouse trajectory,
+releasing a held game mouse button on the next host pump. This never drives
+other desktop applications: neural pointer coordinates stay within EOB3's
+320×200 logical game area, and the visible mouse pointer is warped only
+**inside the focused game window** via SDL's inverse logical scaling (correct
+under window scaling and letterboxing). Focus loss disables visible warping.
+
+The new `nn/human_mouse.hpp` driver uses an eased, gently curved multi-tick
+trajectory, a short hover dwell, a single native click and a timed release.
+Its action is cancelled if the live game screen, in-hand item, selected PC,
+SOP handler or region rectangle changes during movement. `nn status` and
+`nn mouse status` report mouse ownership, motion/click counts, aborted actions,
+screen opens and the current pointer-action state.
+
+**Autonomous behavior:** When a **previously verified** food click is saved,
+AUTO may move the pointer and click the native food plate by itself whenever
+the matching character sheet is already open, that PC is hungry, and the same
+supported food class is held in the game's item cursor. For party slot zero,
+it can also **attempt to open the equipment screen** from gameplay using
+the repo's live-verified portrait location (200,30) *only when* an
+unambiguous currently registered SOP listener there is the native M:240
+inventory-open handler, food is held, a corresponding food-use calibration
+exists, and no adjacent front monster is seen. Screen-opening success is
+reported only after native `W:current_screen` actually changes; failures
+are suppressed until the held item or AUTO state changes. After opening,
+the existing food interaction is still independently checked against its
+live calibrated listener and observed consumption result.
+
+For a one-click food calibration, `nn food probe <slot>` explicitly grants a
+temporary **manual mouse exception** even while AUTO is on. This allows
+one real food-plate click to be verified and remembered. Ordinary manual mouse
+input is blocked until AUTO turns off; the F1 keyboard shortcut always works.
+No unknown menu entries, Save/Load/Quit options, arbitrary inventory slots,
+or unverified potion/spell effects are clicked by the neural controller.
+Uncalibrated scenes continue to use existing safe neural movement and combat
+rather than speculative UI clicking. All existing neural checkpoints and the
+rolling native `nn-1`, `nn-2`, `nn-3` restores remain unchanged.
+
 **Native food-region calibration and guarded automatic use (EOB3 only).**
 The neural agent now records the exact **registered SOP mouse-region
 listener** responsible for a successful native food-use experiment. The
