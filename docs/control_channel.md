@@ -426,15 +426,27 @@ M:54 `sp` dispatch mapping still require verified event/bytecode tracing.
 A menu-open/close probe is not an autonomous spell cast; the neural agent
 does not use unverified input mappings or train on these observations.
 
-**F1 neural advice menu (replaces mouse takeover).**
-Press **F1** while playing EOB3 to open an in-game overlay of at most **five
-clickable suggestions**. Each recommendation is a real supported movement
+**F1 neural advice menu: true game pause, available in both games.**
+Press **F1** while playing **Eye of the Beholder 3 or Dungeon Hack** to
+open an in-game overlay of at most **five clickable suggestions**. The
+host then stays inside a modal SDL event loop: only F1, Escape, numbered
+choices, mouse hover/click, display/fullscreen changes and window-close are
+accepted. **The SOP VM does not dispatch any game events while this panel
+is open.** The heartbeat also subtracts the exact paused wall-clock
+duration to prevent monsters, timers and spells from catching up after the
+pause ends. F1 / Escape exits the pause without taking an action. Each recommendation is a real supported movement
 action (forward, back, strafe left/right, turn left/right), ranked using the
 currently saved `brain.ckpt` neural weights, accessible paths, nearby walls,
 and exploration of unvisited cells. The display is ranked and bounded even
 when all six movement actions are legal; inaccessible actions are excluded.
 The advice comes from the game's trained neural policy, not a language-model
-API and not random prose.
+API and not random prose. For **Dungeon Hack**, the existing native
+`draw_walls(x,y,facing,...,lvlmap,...)` call publishes a validated, live
+32×32 maze and party pose. The same movement actions, rankings, outcome
+feedback and five-choice menu apply without reading EOB3-only SOP class
+statics. Dungeon Hack learns into a distinct checksum-protected
+`Documents/ThirdeyeNN/brain-dungeon-hack.ckpt`; EOB3 keeps its unchanged
+`brain.ckpt`.
 
 Click a numbered row or press **1–5** to execute exactly one recommended
 game action. The overlay closes for that action. After the game's SOP engine
@@ -443,8 +455,12 @@ the controller compares the actual position/direction and computes the
 existing neural exploration reward. Confirmed success or failure updates
 `brain.ckpt` using the same online reinforcement logic as the original
 autonomous mode. Invalid teleport, level transition or UI interruption
-does **not** train the policy. It then presents a **fresh batch of up to five
-suggestions**, with the updated learned sample count and previous result.
+does **not** train the policy. It then **always returns to the F1 advice panel** with a fresh batch
+of up to five suggestions, including the latest learning count and result.
+When a game scene changes, an input times out, or the player reaches a
+non-playable UI, the panel still reappears but shows an empty, safe result
+instead of inventing actions. Close it with F1 / Escape to resume the
+underlying game screen.
 Press **F1** or **Escape** to close the menu; F1 during an outstanding action
 prevents the next menu from automatically reopening. The overlay consumes
 its own mouse clicks so no underlying inventory or combat control also fires.
@@ -466,7 +482,12 @@ For control clients, use `nn advice open`, `nn advice list`,
 reports `advice_open`, `advice_generation`, and `advice_choices`.
 The policy checkpoint schema, survival/combat/food/tactics files, and
 one-minute rotating EOB3 `nn-1`/`nn-2`/`nn-3` native saves with
-five-second game-over recovery are unchanged.
+five-second game-over recovery are unchanged. **Dungeon Hack's
+native save/restore, monster HP, attack hit regions, food and spell
+statics are different from EOB3's.** Those systems remain EOB3-only until
+their own runtime controls and outcomes are verified; the same neural
+advice and movement-learning interface is now active in both games without
+unsafe cross-game commands.
 
 **Native food-region calibration and explicit guarded use (EOB3 only).**
 The neural agent now records the exact **registered SOP mouse-region
