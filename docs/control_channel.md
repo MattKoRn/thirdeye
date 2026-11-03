@@ -424,6 +424,42 @@ M:54 `sp` dispatch mapping still require verified event/bytecode tracing.
 A menu-open/close probe is not an autonomous spell cast; the neural agent
 does not use unverified input mappings or train on these observations.
 
+**Survival retreat and resource-aware learning (EOB3 only).**
+When autonomy is enabled, the controller reads each party member's native
+PC HP/max HP (class 1369 offsets 171/173), food (177), and distinct inventory
+references (inventory[0..25] at offset 81). Known ration/apple/iron-ration
+classes (1347, 1451, 1456) and potential potion classes (1357..1364)
+are counted as **carried resources**. The potion classes are not decoded
+into healing subtypes; the controller never assumes all potions heal.
+
+**New executed action:** when a living monster is verified directly ahead,
+the weakest member has below 50% HP (or below 65% with no known carried
+rations or potions), and a backward/sideways cell is unblocked, neural
+autonomy prioritizes a retreat step instead of attacking. Only verified
+back/strafe SOP key codes are used; forward and rotation are excluded
+from this survival decision. An independent softmax learner uses minimum
+HP ratio, average food and resource-availability features. On the next
+host action tick it evaluates the actual adjacent step, party identity,
+HP/food changes and remaining front-cell monster. Escaping without damage
+is rewarded; stalled moves, continued exposure, HP loss and food loss are
+penalized. Invalid or reloaded party snapshots do not train. Each decision
+and confirmed result logs HP/food deltas, resource counts, reward, mean
+reward, samples and checkpoint state. Existing one-second action pacing remains.
+
+Survival experience is saved independently as
+Documents/ThirdeyeNN/survival.ckpt with the existing checksum-protected
+THIRDEYE_NN 2 model format. It reloads for later decisions, autosaves every
+eight confirmed survival outcomes and flushes on shutdown and before
+game-over restore. A corrupt existing sidecar is never overwritten.
+The control command nn status reports survival_samples, survival_reward,
+survival_success and survival_checkpoint. Legacy brain.ckpt, combat.ckpt,
+weaknesses.ckpt and the native nn-1/nn-2/nn-3 game saves stay unchanged.
+
+**Limit:** This executes injury-aware defensive movement, **not potion
+drinking, healing spells, food consumption or rest**. Those actions need
+verified native item-specific effects and use controls. Carried resource
+counts do not prove an item is an effective cure.
+
 **Autonomous EOB3 combat (first supported interaction).** When F1 autonomy
 is active, a living enemy immediately ahead on the same floor triggers
 right-click weapon attacks through the existing event queue. The agent
@@ -434,7 +470,7 @@ attacks; invalid or unobservable target transitions are not trained on.
 The mouse press is released on the next host pump, and menus, manual
 mode, and scene resets cancel pending attack feedback. Combat is disabled
 in Dungeon Hack until its character offsets and button coordinates have
-been verified. This does **not** yet automate items, spells, or healing.
+been verified. It does not auto-consume items or cast healing spells; see the separate survival retreat behaviour above.
 
 The neural movement brain automatically loads from the operating system's
 resolved Documents folder, at `Documents/ThirdeyeNN/brain.ckpt`.
