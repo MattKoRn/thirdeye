@@ -2,6 +2,7 @@
 #include "combat_mode.hpp"
 #include "online_policy.hpp"
 #include "spell_probe.hpp"
+#include "survival_mode.hpp"
 
 #include "../vm/events.hpp"
 #include "../vm/objects.hpp"
@@ -17,6 +18,7 @@
 #include <optional>
 #include <random>
 #include <unordered_set>
+#include <unordered_set>
 #include <string>
 #include <system_error>
 
@@ -28,13 +30,21 @@ constexpr uint16_t kDungeonClass = 1381;
 constexpr uint16_t kPcClass = 1369;
 constexpr uint16_t kMagicClass = 2377;
 constexpr uint64_t kAutoSaveInterval = 32;
+constexpr uint64_t kSurvivalSaveInterval = 8;
 constexpr std::array<const char *, OnlinePolicy::kActions> kActionNames{
     "forward", "back", "strafe-left", "strafe-right", "turn-left", "turn-right"
 };
 
 struct State {
     OnlinePolicy brain;
+    OnlinePolicy survivalBrain;
     std::filesystem::path file;
+    std::filesystem::path survivalFile;
+    bool survivalStorageReady = false;
+    bool survivalDirty = false;
+    bool survivalCheckpointPresent = false;
+    bool survivalWarningLogged = false;
+    uint64_t savedSurvivalSamples = 0;
     bool initialized = false;
     bool storageReady = false;
     bool trainingEnabled = true; // autonomous outcome training only
@@ -50,6 +60,13 @@ struct State {
         int action = -1;
     };
     std::optional<Pending> pending;
+    struct RetreatPending {
+        OnlinePolicy::Features features{};
+        survival::Party party;
+        Pose before{};
+        int action = -1;
+    };
+    std::optional<RetreatPending> retreatPending;
     std::optional<Pose> failurePose;
     std::array<bool, OnlinePolicy::kActions> failedActions{};
     std::unordered_set<uint32_t> visited;
@@ -242,6 +259,60 @@ void closeSpellProbe(VM::ObjectSystem &objects) {
               << " cast=no trained=no\n";
 }
 
+
+void autoSaveSurvival(bool force) {
+    if (!g.survivalStorageReady || !g.survivalDirty) return;
+    if (!force && g.survivalBrain.samples() - g.savedSurvivalSamples <
+            kSurvivalSaveInterval) return;
+    std::string error;
+    if (g.survivalBrain.save(g.survivalFile, error)) {
+        g.savedSurvivalSamples = g.survivalBrain.samples();
+        g.survivalDirty = false;
+        g.survivalCheckpointPresent = true;
+        std::cout << "[nn] survival checkpoint saved samples="
+                  << g.savedSurvivalSamples << " path="
+                  << g.survivalFile.string() << '\n';
+    } else if (!g.survivalWarningLogged) {
+        std::cerr << "[nn] survival checkpoint error: " << error << '\n';
+        g.survivalWarningLogged = true;
+    }
+}
+
+survival::Party partyResources(VM::ObjectSystem &objects) {
+    survival::Party party;
+    const int kernel = objects.firstObjectOfClass(kKernelClass);
+    if (kernel < 0) return party;
+    std::unordered_set<int> seenItems;
+    for (int slot = 0; slot < 6; ++slot) {
+        const int pc = readWord(objects, kernel, kKernelClass, 229 + slot * 2);
+        if (pc < 0 || objects.classOf(pc) == 0xffff ||
+            !objects.isSubclassOf(objects.classOf(pc), kPcClass))
+            continue;
+        const int hp = readWord(objects, pc, kPcClass, 171);
+        const int maximum = readWord(objects, pc, kPcClass, 173);
+        const int food = readWord(objects, pc, kPcClass, 177);
+        if (hp < 0 || maximum <= 0 || hp > maximum || food < 0)
+            return {}; // invalid statics; no safety-critical decisions
+        party.ids[slot] = pc;
+        party.hp[slot] = hp;
+        party.maximum[slot] = maximum;
+        party.food[slot] = food;
+        // Inventory pointers are not consumption commands. Distinct items
+        // are counted only once, even if a 2-handed slot aliases an object.
+        for (int inv = 0; inv < 26; ++inv) {
+            const int item = readWord(objects, pc, kPcClass, 81 + inv * 2);
+            if (item < 0 || !seenItems.insert(item).second) continue;
+            const uint16_t cls = objects.classOf(item);
+            if (cls == 0xffff) continue;
+            // Documented EOB3 class families. Potion subtype/power is unknown.
+            if (cls >= 1357 && cls <= 1364) ++party.potions;
+            if (cls == 1347 || cls == 1451 || cls == 1456) ++party.rations;
+        }
+    }
+    party.complete = true;
+    return party;
+}
+
 bool canMove(int action, const std::array<bool, 4> &blocked) {
     switch (action) {
     case 0: return !blocked[0]; // forward
@@ -291,6 +362,30 @@ void initialize() {
     if (g.storageReady && !g.checkpointPresent)
         std::cout << "[nn] new brain checkpoint=new path="
                   << g.file.string() << '\n';
+    // Separate version-2 policy sidecar. Old movement/combat/weakness
+    // checkpoints stay byte-for-byte compatible, and native nn saves do not
+    // contain neural weights. A corrupt existing survival file is preserved.
+    g.survivalFile = folder / "survival.ckpt";
+    g.survivalStorageReady = true;
+    std::error_code survivalError;
+    if (std::filesystem::exists(g.survivalFile, survivalError) && !survivalError) {
+        std::string error;
+        if (g.survivalBrain.load(g.survivalFile, error)) {
+            g.savedSurvivalSamples = g.survivalBrain.samples();
+            g.survivalCheckpointPresent = true;
+            std::cout << "[nn] survival checkpoint restored samples="
+                      << g.savedSurvivalSamples << " path="
+                      << g.survivalFile.string() << '\n';
+        } else {
+            g.survivalStorageReady = false;
+            std::cerr << "[nn] existing survival checkpoint rejected: "
+                      << error << '\n';
+        }
+    } else if (survivalError) {
+        g.survivalStorageReady = false;
+        std::cerr << "[nn] survival checkpoint unavailable: "
+                  << survivalError.message() << '\n';
+    }
     // Independent v2 sidecar; legacy movement checkpoints remain unchanged.
     combat::initialize(folder / "combat.ckpt");
 }
@@ -298,6 +393,7 @@ void initialize() {
 void flushLearning() {
     if (!g.initialized) return;
     autoSave(true);
+    autoSaveSurvival(true);
     combat::flushLearning();
 }
 
@@ -307,6 +403,7 @@ void shutdown() {
     combat::shutdown();
     g.autonomous = false;
     g.pending.reset();
+    g.retreatPending.reset();
 }
 
 std::filesystem::path checkpointPath() {
@@ -322,6 +419,7 @@ void setActive(bool enabled) {
     combat::cancel();
     g.pacer.reset(ActionPacer::Clock::now());
     g.pending.reset();
+    g.retreatPending.reset();
     g.failurePose.reset();
     g.failedActions.fill(false);
     for (auto &value : g.spellBaselines) value = {};
@@ -387,6 +485,16 @@ bool training() { return g.trainingEnabled; }
 uint64_t samples() { initialize(); return g.brain.samples(); }
 double meanLoss() { initialize(); return g.brain.meanLoss(); }
 
+double survivalMeanReward() { initialize(); return g.survivalBrain.meanReward(); }
+double survivalSuccessRate() { initialize(); return g.survivalBrain.successRate(); }
+uint64_t survivalSamples() { initialize(); return g.survivalBrain.samples(); }
+const char *survivalCheckpointStatus() {
+    initialize();
+    if (!g.survivalStorageReady) return "unavailable";
+    if (g.survivalDirty) return "pending";
+    return g.survivalCheckpointPresent ? "saved" : "new";
+}
+
 double meanReward() { initialize(); return g.brain.meanReward(); }
 double successRate() { initialize(); return g.brain.successRate(); }
 double learningRate() { initialize(); return g.brain.learningRate(); }
@@ -429,6 +537,7 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         closeSpellProbe(objects); // close even if autonomy toggled off or UI is up
         combat::cancel();
         g.pending.reset();
+        g.retreatPending.reset();
         g.pacer.reset(ActionPacer::Clock::now());
         return;
     }
@@ -442,6 +551,7 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         if (g.spellProbe.shouldOpen()) g.spellProbe.fail();
         combat::cancel();
         g.pending.reset();
+        g.retreatPending.reset();
         // Returning from a menu or restarting autonomous play must not
         // release an action accumulated while gameplay was unavailable.
         g.pacer.reset(ActionPacer::Clock::now());
@@ -457,6 +567,7 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     if (!context(objects, features, blocked, &current) || current.level < 0) {
         combat::cancel();
         g.pending.reset();
+        g.retreatPending.reset();
         return;
     }
     const bool firstVisit = g.visited.insert(visitKey(current)).second;
@@ -464,6 +575,39 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     else combat::cancel();
     // Do not issue another action while waiting for spell or attack damage.
     if (eob3 && combat::waiting()) return;
+
+    // Outcome feedback for a verified backstep/strafe from imminent danger.
+    // The pending action is evaluated only after the VM had a full action tick.
+    if (g.retreatPending) {
+        const auto pending = *g.retreatPending;
+        g.retreatPending.reset();
+        const auto nowParty = partyResources(objects);
+        const bool moved = pending.before.level == current.level &&
+            (pending.before.x != current.x || pending.before.y != current.y) &&
+            std::abs(pending.before.x - current.x) +
+            std::abs(pending.before.y - current.y) == 1;
+        const auto result = survival::evaluate(
+            pending.party, nowParty, moved, combat::threatAhead(objects, current));
+        if (result && g.trainingEnabled &&
+            g.survivalBrain.reinforce(pending.features, pending.action,
+                                      result->reward, result->success)) {
+            g.survivalDirty = true;
+            autoSaveSurvival(false);
+            std::cout << "[nn] survival learned action="
+                      << kActionNames[static_cast<std::size_t>(pending.action)]
+                      << " hp_delta=" << result->hpDelta
+                      << " food_delta=" << result->foodDelta
+                      << " potions_before=" << pending.party.potions
+                      << " potions_after=" << nowParty.potions
+                      << " rations_before=" << pending.party.rations
+                      << " rations_after=" << nowParty.rations
+                      << " escaped=" << (result->success ? "yes" : "no")
+                      << " reward=" << result->reward
+                      << " samples=" << g.survivalBrain.samples()
+                      << " mean_reward=" << g.survivalBrain.meanReward()
+                      << " checkpoint=" << survivalCheckpointStatus() << '\n';
+        }
+    }
 
     // Only reward or penalize a move AFTER the SOP engine has processed it.
     if (g.pending) {
@@ -537,6 +681,35 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         return;
     }
 
+    // Verified survival action: withdraw from an actual front-cell monster
+    // when a living member is critically injured. No potion type, food icon,
+    // spell menu, or unverified camp coordinate is ever guessed. Inventory
+    // availability conditions decisions, but no consumables are auto-used.
+    if (eob3 && !g.retreatPending) {
+        const auto party = partyResources(objects);
+        if (survival::shouldWithdraw(
+                party, combat::threatAhead(objects, current), blocked)) {
+            const auto allowed = survival::exits(blocked);
+            const auto sf = survival::features(features, party);
+            std::uniform_real_distribution<double> random(0.0, 1.0);
+            const int action = g.survivalBrain.select(
+                sf, allowed, random(g.rng), random(g.rng));
+            if (action >= 1 && action <= 3) {
+                events.postEvent(0, VM::SYS_KEYDOWN,
+                                 OnlinePolicy::keyForAction(action));
+                g.retreatPending = State::RetreatPending{sf, party, current, action};
+                std::cout << "[nn] survival retreat="
+                          << kActionNames[static_cast<std::size_t>(action)]
+                          << " weakest_hp_ratio=" << survival::weakestHealth(party)
+                          << " rations=" << party.rations
+                          << " potions_unclassified=" << party.potions
+                          << " reason=adjacent-threat-and-low-hp"
+                          << " item_use=no\n";
+                return;
+            }
+        }
+    }
+
     // First live combat interaction: attack a verified front-cell monster.
     // No invented keyboard attack codes; actual EOB3 weapon hit regions.
     if (eob3 && combat::attack(events, objects, current, blocked))
@@ -577,6 +750,7 @@ bool loadFrom(const std::filesystem::path &path, std::string &error) {
     initialize();
     if (!g.brain.load(path, error)) return false;
     combat::cancel();
+    g.retreatPending.reset();
     if (g.spellProbe.shouldOpen()) g.spellProbe.fail();
     // Do not train the imported weights on feedback from a pre-import action.
     g.pending.reset();
