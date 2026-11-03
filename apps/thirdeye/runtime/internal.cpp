@@ -41,10 +41,15 @@ uint8_t *staticBytePtr(Context &ctx, VM::Value addr, uint32_t size) {
 bool uiScreenActive(VM::ObjectSystem &objects) {
 	constexpr uint16_t kKernelCls = 1382;
 	constexpr uint16_t kCampCls   = 1385;
-	int kn = objects.firstObjectOfClass(kKernelCls);
-	if (kn >= 0)
-		if (uint8_t *p = objects.classStaticPtr(kn, kKernelCls, 265, 2))
-			if ((p[0] | (p[1] << 8)) != 0) return true;
+	// This offset belongs to EOB3's kernel only. Dungeon Hack shares the
+	// class namespace numerically but has a different HACK.RES static layout;
+	// never interpret DH class 1382 at this EOB-specific offset.
+	if (!gDungeonHack) {
+		int kn = objects.firstObjectOfClass(kKernelCls);
+		if (kn >= 0)
+			if (uint8_t *p = objects.classStaticPtr(kn, kKernelCls, 265, 2))
+				if ((p[0] | (p[1] << 8)) != 0) return true;
+	}
 	// Dungeon Hack has its own camp object (class 1975) with the same static
 	// layout as EOB3's. Without it the host kept translating WASDQE into
 	// movement and treating M as the automap toggle while DH's camp menu was
