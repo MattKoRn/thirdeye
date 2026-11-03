@@ -3,6 +3,7 @@
 #include "../thirdeye/nn/spell_probe.hpp"
 #include "../thirdeye/nn/survival_mode.hpp"
 #include "../thirdeye/nn/food_learning.hpp"
+#include "../thirdeye/nn/food_actuator.hpp"
 #include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
@@ -11,6 +12,7 @@
 #include <unordered_set>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 
 namespace mode = THIRDEYE::nn::mode;
 
@@ -60,6 +62,92 @@ TEST(nnSpell, NativeProbeOnlyReportsVerifiedOpenAndClose) {
     probe.fail();
     EXPECT_EQ(probe.stage(), Probe::Stage::Failed);
     EXPECT_FALSE(probe.shouldClose());
+}
+
+TEST(nnFood, NativeClickCalibrationRejectsAmbiguousOrUnrelatedTargets) {
+    VM::EventSystem::LeftClick click;
+    click.serial = 4;
+    click.x = 120; click.y = 55;
+    click.x0 = 115; click.y0 = 52;
+    click.x1 = 125; click.y1 = 60;
+    click.handle = 9;
+    click.handlerClass = 1369;
+    click.handlerObject = 81;
+    click.message = 77;
+    click.eventType = VM::SYS_LEFT_CLICK_REGION;
+    ASSERT_TRUE(click.valid());
+    THIRDEYE::nn::food::ActuatorMemory memory;
+    THIRDEYE::nn::food::CalibratedClick candidate{0, 1347, 1, click};
+    ASSERT_TRUE(memory.remember(candidate));
+    ASSERT_EQ(memory.size(), 1u);
+    ASSERT_NE(memory.find(0, 1347, 1), nullptr);
+    EXPECT_EQ(memory.find(0, 1347, 1)->click.handlerObject, 81);
+    EXPECT_EQ(memory.find(1, 1347, 1), nullptr);
+    EXPECT_EQ(memory.find(0, 1451, 1), nullptr);
+    EXPECT_EQ(memory.find(0, 1347, 2), nullptr);
+    candidate.itemClass = 1357;  // potion never becomes food
+    EXPECT_FALSE(memory.remember(candidate));
+    candidate.itemClass = 1347;
+    candidate.click.handlerObject = -1;
+    EXPECT_FALSE(memory.remember(candidate));
+    candidate.click = click;
+    candidate.click.handle = 1; // page window, not a native UI region
+    EXPECT_FALSE(memory.remember(candidate));
+    candidate.click = click;
+    candidate.click.x = 220; // outside registered rectangle
+    EXPECT_FALSE(memory.remember(candidate));
+    candidate.click = click;
+    candidate.slot = 6;
+    EXPECT_FALSE(memory.remember(candidate));
+    EXPECT_EQ(memory.size(), 1u);
+}
+
+TEST(nnFood, CalibratedNativeActuatorCheckpointIsAtomicAndValidated) {
+    namespace food = THIRDEYE::nn::food;
+    const auto folder = std::filesystem::temp_directory_path() /
+        ("thirdeye_food_actuator_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(folder);
+    const auto path = folder / "food_actuator.ckpt";
+    VM::EventSystem::LeftClick click;
+    click.serial = 15;
+    click.x = 222; click.y = 82;
+    click.x0 = 213; click.y0 = 76;
+    click.x1 = 233; click.y1 = 87;
+    click.handle = 24;
+    click.handlerClass = 1369;
+    click.handlerObject = 919;
+    click.message = 120;
+    click.eventType = VM::SYS_CLICK_REGION;
+    food::ActuatorMemory memory;
+    ASSERT_TRUE(memory.remember({3, 1451, 2, click}));
+    std::string error;
+    ASSERT_TRUE(memory.save(path, error)) << error;
+    food::ActuatorMemory loaded;
+    ASSERT_TRUE(loaded.load(path, error)) << error;
+    ASSERT_EQ(loaded.size(), 1u);
+    const auto *saved = loaded.find(3, 1451, 2);
+    ASSERT_NE(saved, nullptr);
+    EXPECT_EQ(saved->click.x, 222);
+    EXPECT_EQ(saved->click.handlerClass, 1369);
+    EXPECT_EQ(saved->click.handlerObject, 919);
+    EXPECT_EQ(saved->click.message, 120);
+    EXPECT_EQ(saved->click.x0, 213);
+    EXPECT_EQ(loaded.find(3, 1347, 2), nullptr);
+
+    // Corrupt a single byte. Refusing load must NOT discard existing
+    // validated calibrations; the caller must also preserve the bad file.
+    {
+        std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+        ASSERT_TRUE(file);
+        file.seekp(0);
+        file.put('X');
+    }
+    EXPECT_FALSE(loaded.load(path, error));
+    EXPECT_EQ(loaded.size(), 1u);
+    EXPECT_NE(loaded.find(3, 1451, 2), nullptr);
+    std::error_code ec;
+    std::filesystem::remove_all(folder, ec);
 }
 
 TEST(nnFood, OnlyNativeFoodClassesCanProduceARecoveryTrial) {
