@@ -40,6 +40,12 @@ public:
     // Returns negative on invalid input; otherwise cross-entropy loss.
     double learn(const Features &features, int action);
 
+    // One-time migration: blend independently trained EOB3 and Dungeon Hack
+    // weights in proportion to confirmed learning samples. Add counters, never
+    // drop one game's history. Does not alter either original checkpoint.
+    // Reject counter overflow without changing the receiving policy.
+    bool mergeFrom(const OnlinePolicy &other);
+
     bool save(const std::filesystem::path &path, std::string &error) const;
     // Failed loads must never overwrite the running model.
     bool load(const std::filesystem::path &path, std::string &error);
