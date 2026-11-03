@@ -185,6 +185,8 @@ namespace dh {
         bool valid = false;
     };
     NeuralSnapshot neuralSnapshot();
+    // A fresh maze/party must not inherit the prior run's drawn pose.
+    void invalidateNeuralSnapshot();
 }
 namespace dh       { bool tryHandle(Context&, const std::string &fn,
                                     const std::vector<VM::Value>&,
