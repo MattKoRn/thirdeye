@@ -107,9 +107,16 @@ inline std::array<bool, OnlinePolicy::kActions> frontierActions(
     return frontier;
 }
 
-// Pure helpers: testable without SDL or a running game.
+// Both games use ONE cross-game movement model, independent of game saves,
+// title-screen restarts and game-data directory. Existing per-game checkpoints
+// are imported once, without altering their original files.
 inline std::filesystem::path brainFileForDocuments(
     const std::filesystem::path &documents, bool dungeonHack = false) {
+    (void)dungeonHack; // compatible call sites, but never selects a new brain
+    return documents / "ThirdeyeNN" / "brain-shared.ckpt";
+}
+inline std::filesystem::path legacyBrainFileForDocuments(
+    const std::filesystem::path &documents, bool dungeonHack) {
     return documents / "ThirdeyeNN" /
         (dungeonHack ? "brain-dungeon-hack.ckpt" : "brain.ckpt");
 }
@@ -121,6 +128,9 @@ void shutdown();
 // Preserve all confirmed movement, combat, and weakness observations before
 // an nn-1..nn-3 native game restore without resetting live model weights.
 void flushLearning();
+// Reset stale map visits and pending game actions when starting a new game.
+// The shared learned weights and persisted success/failure history survive.
+void resetForNewGame();
 std::filesystem::path checkpointPath();
 
 bool active();
@@ -203,7 +213,7 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
           bool uiActive, bool eob3);
 
 // Manual import/export for control clients. Automatic persistence remains in
-// Documents/ThirdeyeNN/brain.ckpt, independent of these file paths.
+// Documents/ThirdeyeNN/brain-shared.ckpt, independent of these file paths.
 bool saveTo(const std::filesystem::path &path, std::string &error);
 bool loadFrom(const std::filesystem::path &path, std::string &error);
 
