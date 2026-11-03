@@ -852,7 +852,7 @@ need verification against the original `AESOP.EXE`/`INTERP.EXE` behaviour or the
 ## F1 auto-select and Dungeon Hack desktop boot (2026-11-03)
 
 - **F1 toggles autonomous advice ON/OFF without opening an overlay.** Every
-  two elapsed seconds while an observable gameplay map is active, the shared
+  one elapsed second while an observable gameplay map is active, the shared
   neural policy ranks up to five safe coordinate/facing objectives, selects
   the best candidate, emits exactly one native movement/turn key, waits until
   the real VM consumes it, and verifies the new party pose. Only confirmed
@@ -870,7 +870,7 @@ need verification against the original `AESOP.EXE`/`INTERP.EXE` behaviour or the
   `HACK.RES` before initializing the VM and enters its `phase-one`
   native game loop; direct `OPEN.RES` launches `opening`. `EYE.RES`
   continues to boot `start`. The original quiet VM trace defaults remain.
-- New pure tests cover two-second choice pacing, no catch-up action bursts,
+- New pure tests cover one-second choice pacing, no catch-up action bursts,
   objective-based reinforcement, and the two games' distinct boot names.
   Full game-asset smoke tests and Windows rendering verification still
   require running the rebuilt executable with legally owned installs.
@@ -888,7 +888,7 @@ need verification against the original `AESOP.EXE`/`INTERP.EXE` behaviour or the
   Exploration memory records newly reached cells only after confirmation.
 - The manual advice modal pause, player-clickable rows, and return-to-menu
   feedback cycle remain available through the control socket. F1 itself now
-  toggles invisible two-second auto-selection of the same tested objectives.
+  toggles invisible one-second auto-selection of the same tested objectives.
   Multi-step navigation and verified interaction actuators remain future work.
 - **F1 stability / cross-game persistence (2026-11-03):** Compose the frozen
   game frame with the F1 panel before SDL's first present, and repaint in the
