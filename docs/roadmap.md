@@ -857,9 +857,23 @@ need verification against the original `AESOP.EXE`/`INTERP.EXE` behaviour or the
   movement policy. No unsupported item/door/attack targets are invented.
 - The selected native movement key executes once, and the learner compares the
   observed pose with the exact advertised objective. Confirmed success and
-  blocking train the separately persisted game-specific models; unexpected
+  blocking train the single shared `brain-shared.ckpt` policy; unexpected
   displacement, turns or floor changes are unverified and do not train.
   Exploration memory records newly reached cells only after confirmation.
 - The existing F1 modal pause, player-clickable rows, and return-to-F1 feedback
   cycle are retained. Multi-step navigation and verified interaction actuators
   remain future work.
+- **F1 stability / cross-game persistence (2026-11-03):** Compose the frozen
+  game frame with the F1 panel before SDL's first present, and repaint in the
+  modal pause only when a hover row or window surface changes. No 16 ms
+  redraw loop or bare-game flash. On a new Dungeon Hack maze or EOB3 party,
+  flush confirmed outcomes and clear only transient visited-cell, failed-action
+  and queued objective state; do not reset learned weights or training metrics.
+- A single `Documents/ThirdeyeNN/brain-shared.ckpt` now serves both games.
+  On first boot without a shared checkpoint, migrate both former files
+  (`brain.ckpt` and `brain-dungeon-hack.ckpt`) using sample-weighted
+  policy combination with additive learning counters. Original files remain
+  intact, existing corrupt shared checkpoints are never overwritten, and the
+  shared file takes precedence on later starts. Regression tests cover paths,
+  both-model migration, corruption, and F1 hover invalidation.
+
