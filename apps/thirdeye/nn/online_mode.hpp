@@ -126,16 +126,20 @@ bool active();
 bool toggle();
 void setActive(bool enabled);
 bool consumesManualKey(int32_t code);
-// F1 hands native in-game mouse movement and clicks to the NN. Manual
-// movement is accepted only during a bounded calibration trial; F1 still
-// interrupts the autopilot and its mouse button is released on host pump.
-bool ownsMouse();
-bool acceptsCalibrationMouse();
-uint64_t mouseMoves();
-uint64_t mouseClicks();
-uint64_t mouseAborts();
-uint64_t mouseScreens();
-const char *mouseState();
+
+// F1 now displays a player-controlled, 5-choice neural advice overlay.
+// Each suggestion is a verified movement key, ranked from current learned
+// policy weights; clicking it executes ONE action, observes real changes,
+// and generates the next batch after training. No mouse takeover.
+bool adviceMenuOpen();
+int adviceMenuCount();
+uint64_t adviceMenuGeneration();
+std::string adviceMenuLabel(int row);
+std::string adviceLastResult();
+void closeAdviceMenu();
+bool toggleAdviceMenu(VM::ObjectSystem &objects, bool eob3, bool uiActive);
+bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
+                  int row, bool eob3, bool uiActive);
 
 // Read-only native EOB3 spell counters (mage/cleric) and active magic effects.
 // Counters are NOT cast_spell message IDs; no arbitrary spells are fired.
