@@ -126,6 +126,15 @@ bool active();
 bool toggle();
 void setActive(bool enabled);
 bool consumesManualKey(int32_t code);
+// F1 hands native in-game mouse movement and clicks to the NN. Manual
+// movement is accepted only during a bounded calibration trial; F1 still
+// interrupts the autopilot and its mouse button is released on host pump.
+bool ownsMouse();
+bool acceptsCalibrationMouse();
+uint64_t mouseMoves();
+uint64_t mouseClicks();
+uint64_t mouseAborts();
+const char *mouseState();
 
 // Read-only native EOB3 spell counters (mage/cleric) and active magic effects.
 // Counters are NOT cast_spell message IDs; no arbitrary spells are fired.
