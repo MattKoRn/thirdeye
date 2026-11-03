@@ -214,7 +214,7 @@ std::string handle(const std::vector<std::string> &tok,
                 nn::mode::setAutoAdvice(tok[3] == "on");
                 return "nn advice auto " +
                     std::string(nn::mode::autoAdviceEnabled() ? "on" : "off") +
-                    " interval=2s overlay=hidden\nok\n";
+                    " interval=1s overlay=hidden\nok\n";
             }
             if (tok.size() == 3 && tok[2] == "close") {
                 nn::mode::closeAdviceMenu();
