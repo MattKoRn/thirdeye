@@ -59,7 +59,7 @@ class NativeArjTests(unittest.TestCase):
     def test_dungeon_hack_nested_savegame_file(self):
         """The retail DATA1.ARJ contains SAVEGAME/PC.DAT."""
         exe = self.decoder()
-        for member in ("SAVEGAME/PC.DAT", r"SAVEGAME\\PC.DAT"):
+        for member in ("SAVEGAME/PC.DAT", r"SAVEGAME\PC.DAT"):
             with self.subTest(member=member), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 source = root / "DATA1.ARJ"
@@ -74,9 +74,9 @@ class NativeArjTests(unittest.TestCase):
         exe = self.decoder()
         names = (
             "../escape.txt", "SAVEGAME/../../escape.txt",
-            "/absolute.txt", r"\\absolute.txt", "C:/escape.txt",
-            r"C:\\escape.txt", "SAVEGAME//PC.DAT",
-            "SAVEGAME/../PC.DAT", r"SAVEGAME\\..\\PC.DAT",
+            "/absolute.txt", r"\absolute.txt", "C:/escape.txt",
+            r"C:\escape.txt", "SAVEGAME//PC.DAT",
+            "SAVEGAME/../PC.DAT", r"SAVEGAME\..\PC.DAT",
             "SAVEGAME/./PC.DAT", "SAVEGAME/CON/PC.DAT",
             "SAVEGAME/NUL.TXT", "SAVEGAME/PC.DAT/",
             "SAVEGAME/PC.DAT:stream", "SAVEGAME/TRAIL. /PC.DAT",
@@ -96,7 +96,7 @@ class NativeArjTests(unittest.TestCase):
     def test_reject_normalized_duplicate_and_file_directory_conflict(self):
         exe = self.decoder()
         for first, second in (
-            ("SAVEGAME/PC.DAT", r"savegame\\pc.dat"),
+            ("SAVEGAME/PC.DAT", r"savegame\pc.dat"),
             ("SAVEGAME", "SAVEGAME/PC.DAT"),
         ):
             with self.subTest(first=first, second=second), \
