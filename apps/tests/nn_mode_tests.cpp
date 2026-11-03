@@ -149,14 +149,30 @@ TEST(nnDungeonHack, SameNeuralOutcomeModelLearnsVerifiedDHMovement) {
     EXPECT_EQ(dhBrain.failures(), 1u);
 }
 
-TEST(nnDungeonHack, GameSpecificBrainFilesDoNotOverwriteEOB3) {
+TEST(nnDungeonHack, BothGamesUseSamePersistentBrainWithoutTouchingLegacyFiles) {
     const std::filesystem::path documents("/user/Documents");
     const auto eob = mode::brainFileForDocuments(documents);
     const auto hack = mode::brainFileForDocuments(documents, true);
-    EXPECT_EQ(eob.filename().string(), "brain.ckpt");
-    EXPECT_EQ(hack.filename().string(), "brain-dungeon-hack.ckpt");
-    EXPECT_NE(eob, hack);
-    EXPECT_EQ(eob.parent_path(), hack.parent_path());
+    EXPECT_EQ(eob, hack);
+    EXPECT_EQ(eob.filename().string(), "brain-shared.ckpt");
+    EXPECT_EQ(mode::legacyBrainFileForDocuments(documents, false),
+              documents / "ThirdeyeNN" / "brain.ckpt");
+    EXPECT_EQ(mode::legacyBrainFileForDocuments(documents, true),
+              documents / "ThirdeyeNN" / "brain-dungeon-hack.ckpt");
+    EXPECT_NE(mode::legacyBrainFileForDocuments(documents, false), eob);
+    EXPECT_NE(mode::legacyBrainFileForDocuments(documents, true), eob);
+}
+
+TEST(nnAdvice, HoverRepaintsOnlyOnChoiceChanges) {
+    namespace advice = THIRDEYE::nn::advice;
+    const int y = advice::kRowY;
+    EXPECT_FALSE(advice::hoverChanged(30, y + 3, 40, y + 6, 5));
+    EXPECT_TRUE(advice::hoverChanged(-1, -1, 30, y + 3, 5));
+    EXPECT_TRUE(advice::hoverChanged(30, y + 3,
+                                     30, y + advice::kRowHeight + 3, 5));
+    EXPECT_TRUE(advice::hoverChanged(30, y, 5, y, 5));
+    EXPECT_FALSE(advice::hoverChanged(5, y, 5, y + 9, 5));
+    EXPECT_FALSE(advice::hoverChanged(30, y, 30, y, 0));
 }
 
 TEST(nnAdvice, GeneratesAtMostFiveLiveReachableActions) {
@@ -627,9 +643,9 @@ TEST(nnSurvival, ContextAndCheckpointRetainLearnedEscapePreference) {
 TEST(nnMode, BrainLivesDirectlyInsideDocumentsThirdeyeNN) {
     const std::filesystem::path docs("my-documents");
     const auto file = mode::brainFileForDocuments(docs);
-    EXPECT_EQ(file, docs / "ThirdeyeNN" / "brain.ckpt");
+    EXPECT_EQ(file, docs / "ThirdeyeNN" / "brain-shared.ckpt");
     EXPECT_EQ(file.parent_path().filename().string(), "ThirdeyeNN");
-    EXPECT_EQ(file.filename().string(), "brain.ckpt");
+    EXPECT_EQ(file.filename().string(), "brain-shared.ckpt");
 }
 
 TEST(nnMode, RewardComesFromTheAgentsOwnObservedActions) {
