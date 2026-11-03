@@ -843,7 +843,16 @@ bool toggleAdviceMenu(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
     }
     // F1 is now a user-invoked advice menu, NOT autonomous takeover.
     if (g.autonomous) setActive(false);
-    return regenerateAdvice(objects, eob3, uiActive);
+    if (regenerateAdvice(objects, eob3, uiActive)) return true;
+    // Dungeon Hack's first native draw_walls snapshot may not have arrived
+    // yet. Show a safe empty advice screen rather than silently refusing F1.
+    // The player can close it to let the runtime finish loading the level.
+    g.adviceBatch = {};
+    g.adviceOpen = true;
+    g.adviceResult = uiActive
+        ? "Game menu active. F1 closes this advice screen."
+        : "Waiting for the game map. F1 closes to resume.";
+    return true;
 }
 bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
                   int row, bool eob3, bool uiActive) {
