@@ -901,6 +901,16 @@ void GRAPHICS::Graphics::materializeImage(std::vector<uint8_t> bmp) {
 	mState = MATERIALIZE;
 }
 
+void GRAPHICS::Graphics::redrawFrozenFrame() {
+	// The renderer's last game texture already contains the exact pixels
+	// from update(). No graphics state machine or SDL clock is touched.
+	// Caller draws the F1 menu and presents after this frozen underlay.
+	if (mPresentTex == nullptr) return;
+	SDL_SetRenderDrawColor(mRenderer, 0, 0, 0, 255);
+	SDL_RenderClear(mRenderer);
+	SDL_RenderTexture(mRenderer, mPresentTex, nullptr, nullptr);
+}
+
 void GRAPHICS::Graphics::update() {
 	bool updateScene = false;
 	mClock = SDL_GetTicks();
