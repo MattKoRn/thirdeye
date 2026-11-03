@@ -17,10 +17,6 @@ namespace THIRDEYE::nn::advice {
 constexpr int kMax = 5;
 constexpr int kRowX = 22, kRowY = 51, kRowHeight = 22;
 constexpr int kRowWidth = 276;
-constexpr std::array<const char *, OnlinePolicy::kActions> kNames{
-    "Explore forward", "Step backward", "Strafe left",
-    "Strafe right", "Turn left", "Turn right"
-};
 struct Suggestion {
     int action = -1;
     double score = 0.0;
