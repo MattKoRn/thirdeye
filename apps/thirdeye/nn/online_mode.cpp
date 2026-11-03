@@ -827,6 +827,8 @@ void resetForNewGame() {
     g.failurePose.reset();
     g.failedActions.fill(false);
     g.visited.clear();
+    if (runtime::gDungeonHack)
+        runtime::dh::invalidateNeuralSnapshot();
     g.pacer.reset(ActionPacer::Clock::now());
     if (g.spellProbe.shouldOpen()) g.spellProbe.fail();
     for (auto &value : g.spellBaselines) value = {};
