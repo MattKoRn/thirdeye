@@ -20,6 +20,7 @@
 #include <iostream>
 #include <optional>
 #include <random>
+#include <set>
 #include <unordered_set>
 #include <string>
 #include <system_error>
@@ -42,6 +43,7 @@ struct State {
     OnlinePolicy survivalBrain;
     OnlinePolicy foodBrain;
     food::ActuatorMemory foodActuator;
+    std::set<food::ActuatorMemory::Key> failedFoodRegions;
     std::filesystem::path foodActuatorFile;
     bool foodActuatorReady = false;
     bool foodActuatorDirty = false;
@@ -417,6 +419,9 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
                       << observed.y1 << ") screen=" << trial.clickedScreen
                       << '\n';
         } else {
+            if (trial.automatic) g.failedFoodRegions.insert(
+                food::ActuatorMemory::key(trial.slot,
+                       trial.before.itemClass, spellScreen(objects)));
             g.foodTrial.reset();
             g.foodStatus = "unverified";
             std::cout << "[nn] food trial rejected reason=ambiguous-or-unregistered-click learned=no\n";
@@ -425,6 +430,9 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
     }
     if (trial.click.serial &&
         observed.serial != trial.click.serial) {
+        if (trial.automatic) g.failedFoodRegions.insert(
+            food::ActuatorMemory::key(trial.slot,
+                trial.before.itemClass, trial.clickedScreen));
         g.foodTrial.reset();
         g.foodStatus = "unverified";
         std::cout << "[nn] food trial rejected reason=multiple-clicks learned=no\n";
@@ -447,8 +455,11 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
             profile.click.handlerObject == pending.before.pc &&
             profile.click.handlerClass == kPcClass;
         const bool learnedRegion =
-            !pending.automatic && directPcListener &&
-            g.foodActuatorReady && g.foodActuator.remember(profile);
+            !pending.automatic && g.foodActuatorReady &&
+            g.foodActuator.remember(profile);
+        if (learnedRegion || pending.automatic)
+            g.failedFoodRegions.erase(food::ActuatorMemory::key(
+                pending.slot, pending.before.itemClass, pending.clickedScreen));
         if (learnedRegion) {
             g.foodActuatorDirty = true;
             autoSaveFoodActuator(true);
@@ -465,8 +476,9 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
         std::cout << "[nn] native food verified"
                   << " item_class=" << pending.before.itemClass
                   << " slot=" << pending.slot
-                  << " actuator=" << (learnedRegion ? "calibrated" :
-                                      (pending.automatic ? "replayed" : "unverified-listener"))
+                  << " actuator=" << (learnedRegion
+                        ? (directPcListener ? "calibrated-direct-pc" : "observed-only")
+                        : (pending.automatic ? "replayed" : "unverified-listener"))
                   << " regions=" << g.foodActuator.size()
                   << " food_gain=" << outcome->foodGain
                   << " hp_delta=" << outcome->hpGain
@@ -486,6 +498,9 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
         after.food < pending.before.food ||
         ActionPacer::Clock::now() - pending.started >=
             std::chrono::seconds(30)) {
+        if (pending.automatic) g.failedFoodRegions.insert(
+            food::ActuatorMemory::key(pending.slot,
+                pending.before.itemClass, pending.clickedScreen));
         g.foodStatus = "unverified";
         g.foodTrial.reset();
         std::cout << "[nn] native food probe unverified"
@@ -825,6 +840,12 @@ bool useCalibratedFood(VM::ObjectSystem &objects, VM::EventSystem &events,
         return false;
     }
     const auto before = foodSnapshot(objects, slot);
+    const auto regionKey = food::ActuatorMemory::key(
+        slot, before.itemClass, spellScreen(objects));
+    if (g.failedFoodRegions.contains(regionKey)) {
+        error = "unverified food click suppressed until a new manual calibration";
+        return false;
+    }
     const auto *profile = g.foodActuator.find(
         slot, before.itemClass, spellScreen(objects));
     if (!profile || profile->click.handlerObject != before.pc ||
