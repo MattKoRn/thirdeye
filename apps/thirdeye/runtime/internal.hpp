@@ -18,6 +18,7 @@
 #include "../vm/vm.hpp"
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <iosfwd>
@@ -173,6 +174,18 @@ namespace graphics { bool tryHandle(Context&, const std::string &fn,
 namespace sound    { bool tryHandle(Context&, const std::string &fn,
                                     const std::vector<VM::Value>&,
                                     VM::Value &result); }
+// Read-only game-state snapshot published by verified Dungeon Hack runtime
+// CALLs, not guessed EOB3 class numbers. Invalid until native draw_walls
+// supplies a complete map/pose for the current generated level.
+namespace dh {
+    struct NeuralSnapshot {
+        int x = -1, y = -1, facing = -1, level = -1;
+        std::array<uint8_t, 1024> tiles{};
+        uint64_t revision = 0;
+        bool valid = false;
+    };
+    NeuralSnapshot neuralSnapshot();
+}
 namespace dh       { bool tryHandle(Context&, const std::string &fn,
                                     const std::vector<VM::Value>&,
                                     VM::Value &result);
