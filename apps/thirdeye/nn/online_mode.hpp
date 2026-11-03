@@ -134,6 +134,7 @@ bool acceptsCalibrationMouse();
 uint64_t mouseMoves();
 uint64_t mouseClicks();
 uint64_t mouseAborts();
+uint64_t mouseScreens();
 const char *mouseState();
 
 // Read-only native EOB3 spell counters (mage/cleric) and active magic effects.
