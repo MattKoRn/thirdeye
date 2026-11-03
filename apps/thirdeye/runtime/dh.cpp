@@ -29,6 +29,16 @@
 
 namespace THIRDEYE::runtime::dh {
 
+// Runtime-observed, read-only snapshot: the exact arguments of DH's real
+// draw_walls and load_level_map CALLs. Does not inspect EOB3 class statics
+// or depend on guessed HACK.RES class ids.
+namespace {
+NeuralSnapshot gNeuralSnapshot;
+int gObservedMapLevel = -1;
+}
+
+NeuralSnapshot neuralSnapshot() { return gNeuralSnapshot; }
+
 namespace {
 
 // Case-insensitive child resolve (dup of engine.cpp's helper; keeping dh.cpp
@@ -521,6 +531,16 @@ bool tryHandle(Context &ctx, const std::string &fn,
 		    static_cast<uint16_t>(static_cast<int32_t>(args[4]));
 		const uint8_t *lvlmap = staticBytePtr(ctx, args[5], 1024);
 		const uint8_t *floorAt = staticBytePtr(ctx, args[6], 18);
+		if (lvlmap && gObservedMapLevel >= 0 && px >= 0 && px < 32 &&
+		    py >= 0 && py < 32) {
+			gNeuralSnapshot.x = px;
+			gNeuralSnapshot.y = py;
+			gNeuralSnapshot.facing = facing;
+			gNeuralSnapshot.level = gObservedMapLevel;
+			std::copy_n(lvlmap, 1024, gNeuralSnapshot.tiles.begin());
+			gNeuralSnapshot.valid = true;
+			++gNeuralSnapshot.revision;
+		}
 		// THIRDEYE_DHWALL_FORCE=1 ignores the floor_at visibility gate --
 		// useful diagnostic when working on init_viewspace/build_clipping.
 		// Normal path uses real occlusion.
@@ -874,6 +894,10 @@ bool tryHandle(Context &ctx, const std::string &fn,
 	// ponytail: 0x400 buffer only; upgrade when we know SOP expects more.
 	if (fn == "load_level_map" && args.size() >= 2) {
 		int lvl = static_cast<int>(args[1]);
+		// A level transition invalidates the old pose until the next
+		// successful native draw_walls CALL publishes the new map and view.
+		gObservedMapLevel = (lvl >= 0 && lvl <= 255) ? lvl : -1;
+		gNeuralSnapshot.valid = false;
 		uint8_t *dst = staticBytePtr(ctx, args[0], 0x400);
 		if (!dst) { result = 0; return true; }
 		loadChunk(ctx, "LEVELS.DAT", lvl, /*header=*/4, /*chunk=*/0x400, dst);
