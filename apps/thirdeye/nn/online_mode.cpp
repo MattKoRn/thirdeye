@@ -187,6 +187,13 @@ bool context(VM::ObjectSystem &objects, OnlinePolicy::Features &features,
     // Its real native renderer publishes the party/map through verified
     // draw_walls and load_level_map runtime arguments.
     if (runtime::gDungeonHack) {
+        // A cached renderer observation is not enough: a native DH dungeon
+        // instance must still be alive. This prevents stale poses from
+        // exposing movement advice on a title or game-over screen.
+        uint16_t dungeonClass = 0;
+        if (!objects.findClassByName("dungeon", dungeonClass) ||
+            objects.firstObjectOfClass(dungeonClass) < 0)
+            return false;
         const auto native = runtime::dh::neuralSnapshot();
         dungeon_hack::View view;
         view.x = native.x;
