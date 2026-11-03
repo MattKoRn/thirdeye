@@ -190,6 +190,7 @@ std::string handle(const std::vector<std::string> &tok,
                    " mouse_moves=" + std::to_string(nn::mode::mouseMoves()) +
                    " mouse_clicks=" + std::to_string(nn::mode::mouseClicks()) +
                    " mouse_aborts=" + std::to_string(nn::mode::mouseAborts()) +
+                   " mouse_screens=" + std::to_string(nn::mode::mouseScreens()) +
                    " tactic_samples=" + std::to_string(nn::mode::tacticalSamples()) +
                    " enemy_tactics=" + std::to_string(nn::mode::knownWeaknesses()) +
                    " tactic_checkpoint=" + nn::mode::tacticalCheckpointStatus() +
@@ -208,6 +209,7 @@ std::string handle(const std::vector<std::string> &tok,
                    " moves=" + std::to_string(nn::mode::mouseMoves()) +
                    " clicks=" + std::to_string(nn::mode::mouseClicks()) +
                    " aborted=" + std::to_string(nn::mode::mouseAborts()) +
+                   " screens=" + std::to_string(nn::mode::mouseScreens()) +
                    " calibrated_food_targets=" +
                    std::to_string(nn::mode::foodCalibrations()) + "\nok\n";
         if (sub == "food") {
