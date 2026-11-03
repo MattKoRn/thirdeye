@@ -1258,8 +1258,21 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         g.adviceBatch = {}; // stay in F1 panel, but never act on stale advice
     }
     if (g.advicePending) {
+        // Turning F1 OFF must not leave an undelivered automatic key in
+        // the VM queue. A key already consumed is still observed once, so
+        // confirmed actions retain their learned success/failure outcome.
+        if (!g.autoAdvice && !g.adviceReopen) {
+            const int key = OnlinePolicy::keyForAction(g.advicePending->action);
+            if (key >= 0 && events.findEvent(VM::SYS_KEYDOWN, key) >= 0) {
+                events.flushEventQueue(0, VM::SYS_KEYDOWN, key);
+                g.advicePending.reset();
+                g.adviceResult = "F1 auto advice stopped before input; no learning.";
+                std::cout << "[nn] F1 auto-advice queued key cancelled trained=no\n";
+                return;
+            }
+        }
         observeAdvice(events, objects, eob3, uiActive);
-        return; // never issue an automatic action during advice feedback
+        return; // never issue another automatic action during feedback
     }
     if (g.adviceOpen) return; // in-game overlay owns selection
     if (g.foodTrial) {
