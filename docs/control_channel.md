@@ -426,50 +426,53 @@ M:54 `sp` dispatch mapping still require verified event/bytecode tracing.
 A menu-open/close probe is not an autonomous spell cast; the neural agent
 does not use unverified input mappings or train on these observations.
 
-**F1 neural advice menu: true game pause, available in both games.**
-Press **F1** while playing **Eye of the Beholder 3 or Dungeon Hack** to
-open an in-game overlay of at most **five clickable suggestions**. The
-host then stays inside a modal SDL event loop: only F1, Escape, numbered
-choices, mouse hover/click, display/fullscreen changes and window-close are
-accepted. **The SOP VM does not dispatch any game events while this panel
-is open.** The renderer presents the cached game frame and F1 overlay together
-(no intermediate bare-game present), then repaints only when the hovered choice
-or window surface changes. It never redraws merely because a paused wait timed
-out. The renderer keeps its last cached game frame without advancing
-cinematics, fades or graphics animations; only the advice highlight changes.
-The heartbeat also subtracts the exact paused wall-clock duration to prevent
-monsters, timers and spells from catching up after the pause ends. F1 / Escape exits the pause without taking an action. Each recommendation is a real supported movement
-action (forward, back, strafe left/right, turn left/right), ranked using the
-currently saved shared `brain-shared.ckpt` neural weights, accessible paths, nearby walls,
-and exploration of unvisited cells. The display is ranked and bounded even
-when all six movement actions are legal; inaccessible actions are excluded.
-The advice comes from the game's trained neural policy, not a language-model
-API and not random prose. For **Dungeon Hack**, the existing native
-`draw_walls(x,y,facing,...,lvlmap,...)` call publishes a validated, live
-32×32 maze and party pose. The same movement actions, rankings, outcome
-feedback and five-choice menu apply without reading EOB3-only SOP class
-statics. Both games learn into the SAME checksum-protected
-`Documents/ThirdeyeNN/brain-shared.ckpt`. On first use, existing
-`brain.ckpt` (EOB3) and `brain-dungeon-hack.ckpt` (Dungeon Hack)
-are merged by learned-sample count into the shared file; both originals
-remain untouched. The shared checkpoint is reused on later boots.
+**F1 auto-select advice (Dungeon Hack and Eye of the Beholder III).**
+Press **F1** to toggle an invisible, autonomous neural advice mode **ON**.
+Press **F1** again to switch it **OFF**. The F1 overlay is **not shown**
+while automatic advice runs, and game movement, timers and enemy actions keep
+running normally. Starting from the toggle, the policy gets one decision slot
+every **two seconds of elapsed time** when live gameplay is observable.
+It ranks at most five safe, specific adjacent-cell or facing objectives using
+the shared learned policy, chooses the highest-ranked one, queues exactly one
+native movement/turn key, then waits for the SOP VM to consume that key and
+reports the real position/rotation outcome. It never queues overlapping actions
+or issues catch-up bursts after a stalled frame. An unavailable map or
+non-gameplay screen produces no action.
 
-Click a numbered row or press **1–5** to execute exactly one recommended
-game action. The overlay closes for that action. After the game's SOP engine
-has consumed the native movement key and the next state can be observed,
-the controller compares the actual position/direction and computes the
-existing neural exploration reward. Confirmed success or failure updates
-`brain-shared.ckpt` using the same online reinforcement logic as the original
-autonomous mode. Invalid teleport, level transition or UI interruption
-does **not** train the policy. It then **always returns to the F1 advice panel** with a fresh batch
-of up to five suggestions, including the latest learning count and result.
-When a game scene changes, an input times out, or the player reaches a
-non-playable UI, the panel still reappears but shows an empty, safe result
-instead of inventing actions. Close it with F1 / Escape to resume the
-underlying game screen.
-Press **F1** or **Escape** to close the menu; F1 during an outstanding action
-prevents the next menu from automatically reopening. The overlay consumes
-its own mouse clicks so no underlying inventory or combat control also fires.
+Only observed success or blocking updates learned weights and the shared
+checksum-checked `Documents/ThirdeyeNN/brain-shared.ckpt`. The confirmed
+objective is saved immediately; unverified movement, mouse interference,
+and timed-out native keys are never trained as success. Starting a new game
+retains the brain, while clearing stale visited cells and pending input.
+The model is shared across Dungeon Hack and Eye of the Beholder III. Older
+`brain.ckpt` and `brain-dungeon-hack.ckpt` models are migrated once and
+left intact. Auto-select uses the same objective generator, learned-weight
+ranking and action-outcome verifier as manual neural advice; it never
+takes over the operating-system mouse.
+
+**Manual advice is still available through the control socket.** Use
+`nn advice open` to show the five-choice overlay, `nn advice list`,
+`nn advice choose 1` through `nn advice choose 5`, and
+`nn advice close`. Manually opening advice switches F1 auto-select OFF.
+Manual advice is a true pause: the renderer holds one frozen game frame
+behind a clickable overlay, does not repeatedly present identical frames,
+and excludes paused time from the VM heartbeat. It returns to the panel
+after observing each selected action. Escape closes the manual panel;
+pressing F1 from the manual panel starts invisible auto-select instead.
+
+Socket commands `nn advice auto on`, `nn advice auto off`, and
+`nn advice status` also control/report the F1 auto-selection loop.
+`nn status` reports `advice_auto=on/off`, sample count, reward and
+checkpoint state. The separate `nn auto on` control still enables the
+legacy full autonomous movement/combat agent; only one movement learner
+emits keys at once.
+
+**Dungeon Hack launch fix:** The standard game shortcut now boots
+`HACK.RES` using the native `phase-one` entrypoint. It no longer
+requires Eye of the Beholder III's `INTRO.GFF` or falls back to the
+full SOP diagnostic dump when that EOB3 file is missing. `OPEN.RES`
+continues to use `opening` when explicitly requested. EOB3 continues to
+boot `EYE.RES` / `start` without changes to its startup semantics.
 
 **Mouse takeover removed:** The operating-system pointer is no longer
 warped or hijacked. Regular motion and clicks always pass to the game when
@@ -479,13 +482,13 @@ unattended food clicking were removed. The separately available
 `nn food use <slot>` remains a deliberate **explicit** action against a
 previously verified native food region. An optional advanced socket command
 `nn auto on` still enables the existing autonomous movement/combat agent,
-but does **not** take ownership of the player's mouse. F1 itself now opens
-the advice menu instead of switching continuous AUTO on/off.
+but does **not** take ownership of the player's mouse. F1 now toggles
+the new two-second auto-select advice mode with no visible menu.
 
-For control clients, use `nn advice open`, `nn advice list`,
-`nn advice choose 1` through `nn advice choose 5`,
-`nn advice close` and `nn advice status`. The normal `nn status`
-reports `advice_open`, `advice_generation`, and `advice_choices`.
+For control clients, manual advice remains available through
+`nn advice open/list/choose/close/status`, and auto-select through
+`nn advice auto on/off`. The normal `nn status` reports
+`advice_auto`, `advice_open`, `advice_generation`, and `advice_choices`.
 The policy checkpoint schema, shared brain storage, survival/combat/food/tactics files, and
 one-minute rotating EOB3 `nn-1`/`nn-2`/`nn-3` native saves with
 five-second game-over recovery are unchanged. **Dungeon Hack's
