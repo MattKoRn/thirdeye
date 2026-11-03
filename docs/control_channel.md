@@ -432,9 +432,10 @@ open an in-game overlay of at most **five clickable suggestions**. The
 host then stays inside a modal SDL event loop: only F1, Escape, numbered
 choices, mouse hover/click, display/fullscreen changes and window-close are
 accepted. **The SOP VM does not dispatch any game events while this panel
-is open.** The heartbeat also subtracts the exact paused wall-clock
-duration to prevent monsters, timers and spells from catching up after the
-pause ends. F1 / Escape exits the pause without taking an action. Each recommendation is a real supported movement
+is open.** The renderer redraws its last cached game frame without advancing
+cinematics, fades or graphics animations; only the advice highlight changes.
+The heartbeat also subtracts the exact paused wall-clock duration to prevent
+monsters, timers and spells from catching up after the pause ends. F1 / Escape exits the pause without taking an action. Each recommendation is a real supported movement
 action (forward, back, strafe left/right, turn left/right), ranked using the
 currently saved `brain.ckpt` neural weights, accessible paths, nearby walls,
 and exploration of unvisited cells. The display is ranked and bounded even
