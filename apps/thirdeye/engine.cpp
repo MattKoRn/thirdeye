@@ -908,9 +908,9 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 				}
 			}
 			if (THIRDEYE::nn::mode::adviceMenuOpen()) {
-				// Repaint over the game's unchanged framebuffer. This keeps
-				// hover feedback responsive without running any SOP events.
-				gfx.update();
+				// Redraw only the cached game texture and advice, freezing
+				// animations/fades as well as all SOP VM/timer activity.
+				gfx.redrawFrozenFrame();
 				drawAdvice();
 			}
 		}
