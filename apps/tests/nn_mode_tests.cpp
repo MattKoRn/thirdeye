@@ -5,6 +5,7 @@
 #include "../thirdeye/nn/food_learning.hpp"
 #include "../thirdeye/nn/food_actuator.hpp"
 #include "../thirdeye/nn/advice_menu.hpp"
+#include "../thirdeye/nn/dungeon_hack_context.hpp"
 #include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
@@ -64,6 +65,88 @@ TEST(nnSpell, NativeProbeOnlyReportsVerifiedOpenAndClose) {
     probe.fail();
     EXPECT_EQ(probe.stage(), Probe::Stage::Failed);
     EXPECT_FALSE(probe.shouldClose());
+}
+
+TEST(nnAdvice, ModalPauseFreezesGameHeartbeatAndResumesWithoutCatchup) {
+    THIRDEYE::nn::advice::GameClock clock;
+    EXPECT_EQ(clock.activeMillis(1000), 1000u);
+    clock.beginPause(1050);
+    EXPECT_TRUE(clock.paused());
+    EXPECT_EQ(clock.activeMillis(1500), 1050u);
+    EXPECT_EQ(clock.activeMillis(40000), 1050u);
+    clock.beginPause(5000); // repeated F1 redraw must not reset the offset
+    EXPECT_EQ(clock.activeMillis(6000), 1050u);
+    clock.endPause(6050);
+    EXPECT_FALSE(clock.paused());
+    EXPECT_EQ(clock.activeMillis(6050), 1050u);
+    EXPECT_EQ(clock.activeMillis(6250), 1250u);
+    clock.endPause(7000); // cannot subtract pause twice
+    EXPECT_EQ(clock.activeMillis(7000), 2000u);
+    clock.beginPause(7100);
+    clock.endPause(7200);
+    EXPECT_EQ(clock.activeMillis(7300), 2200u);
+}
+
+TEST(nnDungeonHack, UsesNativeLevelMapNotEOB3ClassOffsets) {
+    namespace dh = THIRDEYE::nn::dungeon_hack;
+    dh::View view;
+    view.valid = true;
+    view.x = 7; view.y = 8; view.facing = 0; view.level = 4;
+    view.tiles.fill(0);           // conservatively blocked by default
+    view.tiles[7 * 32 + 7] = 0xff; // north: open
+    view.tiles[8 * 32 + 8] = 0xff; // east: open
+    view.tiles[9 * 32 + 7] = 0x00; // south: wall
+    view.tiles[8 * 32 + 6] = 0x18; // west: non-floor feature
+    THIRDEYE::nn::OnlinePolicy::Features features{};
+    std::array<bool, 4> blocked{};
+    mode::Pose pose;
+    ASSERT_TRUE(dh::observe(view, features, blocked, &pose));
+    EXPECT_EQ(pose.x, 7);
+    EXPECT_EQ(pose.y, 8);
+    EXPECT_EQ(pose.facing, 0);
+    EXPECT_EQ(pose.level, 4);
+    EXPECT_FALSE(blocked[0]); // forward/north
+    EXPECT_FALSE(blocked[1]); // right/east
+    EXPECT_TRUE(blocked[2]);  // rear/south
+    EXPECT_TRUE(blocked[3]);  // left/west
+    const std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> allowed{
+        !blocked[0], !blocked[2], !blocked[3], !blocked[1], true, true};
+    THIRDEYE::nn::OnlinePolicy dhBrain;
+    const std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> frontier{};
+    const auto recommendations = THIRDEYE::nn::advice::generate(
+        dhBrain, features, allowed, frontier, 10);
+    EXPECT_LE(recommendations.count, 5);
+    for (int i = 0; i < recommendations.count; ++i) {
+        const int action = recommendations.suggestions[static_cast<std::size_t>(i)].action;
+        EXPECT_TRUE(allowed[static_cast<std::size_t>(action)]);
+    }
+    view.valid = false;
+    EXPECT_FALSE(dh::observe(view, features, blocked, &pose));
+    view.valid = true;
+    view.x = 32;
+    EXPECT_FALSE(dh::observe(view, features, blocked, &pose));
+    view.x = 7;
+    view.facing = 5;
+    EXPECT_FALSE(dh::observe(view, features, blocked, &pose));
+}
+
+TEST(nnDungeonHack, SameNeuralOutcomeModelLearnsVerifiedDHMovement) {
+    THIRDEYE::nn::OnlinePolicy dhBrain;
+    const auto start = THIRDEYE::nn::OnlinePolicy::features(
+        6, 6, 0, {false, true, true, true});
+    const mode::Pose before{6, 6, 0, 2};
+    const mode::Pose after{6, 5, 0, 2};
+    const auto moved = mode::evaluateOutcome(before, after, 0, true);
+    ASSERT_TRUE(moved.success);
+    ASSERT_TRUE(dhBrain.reinforce(start, 0, moved.reward, moved.success));
+    EXPECT_EQ(dhBrain.samples(), 1u);
+    EXPECT_GT(dhBrain.meanReward(), 0.0);
+    const auto stalled = mode::evaluateOutcome(after, after, 0, false);
+    EXPECT_FALSE(stalled.success);
+    ASSERT_TRUE(dhBrain.reinforce(start, 0, stalled.reward, stalled.success));
+    EXPECT_EQ(dhBrain.samples(), 2u);
+    EXPECT_EQ(dhBrain.successes(), 1u);
+    EXPECT_EQ(dhBrain.failures(), 1u);
 }
 
 TEST(nnAdvice, GeneratesAtMostFiveLiveReachableActions) {
