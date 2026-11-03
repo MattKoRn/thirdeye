@@ -2,6 +2,7 @@
 #include "../thirdeye/nn/online_mode.hpp"
 #include "../thirdeye/nn/spell_probe.hpp"
 #include "../thirdeye/nn/survival_mode.hpp"
+#include "../thirdeye/nn/food_learning.hpp"
 #include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
@@ -59,6 +60,103 @@ TEST(nnSpell, NativeProbeOnlyReportsVerifiedOpenAndClose) {
     probe.fail();
     EXPECT_EQ(probe.stage(), Probe::Stage::Failed);
     EXPECT_FALSE(probe.shouldClose());
+}
+
+TEST(nnFood, OnlyNativeFoodClassesCanProduceARecoveryTrial) {
+    namespace food = THIRDEYE::nn::food;
+    EXPECT_EQ(food::actionForClass(1347), 0);
+    EXPECT_EQ(food::actionForClass(1451), 1);
+    EXPECT_EQ(food::actionForClass(1456), 2);
+    EXPECT_EQ(food::actionForClass(1357), -1); // unknown potion
+    EXPECT_EQ(food::actionForClass(1377), -1); // scroll
+    EXPECT_EQ(food::classForAction(0), 1347);
+    EXPECT_EQ(food::classForAction(2), 1456);
+    EXPECT_EQ(food::classForAction(5), -1);
+}
+
+TEST(nnFood, ConsumptionRequiresTheGameToChangeBothCursorAndFood) {
+    namespace food = THIRDEYE::nn::food;
+    food::Observation before;
+    before.pc = 10;
+    before.item = 999;
+    before.itemClass = 1347;
+    before.level = 3;
+    before.food = 12;
+    before.hitpoints = 18;
+    before.maxHitpoints = 20;
+    before.cursorItem = 999;
+    auto after = before;
+    after.food = 68;
+    after.cursorItem = -1;
+    const auto success = food::evaluate(before, after);
+    ASSERT_TRUE(success);
+    EXPECT_EQ(success->foodGain, 56);
+    EXPECT_EQ(success->hpGain, 0);
+    EXPECT_GT(success->reward, 0.0);
+
+    after = before;
+    after.cursorItem = -1; // item merely dropped or equipped
+    EXPECT_FALSE(food::evaluate(before, after));
+    after = before;
+    after.food = 60; // non-consumptive food gain
+    EXPECT_FALSE(food::evaluate(before, after));
+    after = before;
+    after.food = 60;
+    after.cursorItem = -1;
+    after.pc = 11; // character switched
+    EXPECT_FALSE(food::evaluate(before, after));
+    after = before;
+    after.food = 60;
+    after.cursorItem = -1;
+    after.level = 4; // scene/restore transition
+    EXPECT_FALSE(food::evaluate(before, after));
+    after = before;
+    after.food = 60;
+    after.cursorItem = -1;
+    after.maxHitpoints = 25; // unsafe statics
+    EXPECT_FALSE(food::evaluate(before, after));
+    before.itemClass = 1357; // potion is NOT assumed to heal/eat
+    after = before;
+    after.food = 60;
+    after.cursorItem = -1;
+    EXPECT_FALSE(food::evaluate(before, after));
+}
+
+TEST(nnFood, RealFoodOutcomeUpdatesAndRestoresClassPreference) {
+    namespace food = THIRDEYE::nn::food;
+    THIRDEYE::nn::survival::Party party;
+    party.complete = true;
+    party.ids[0] = 10;
+    party.hp[0] = 17;
+    party.maximum[0] = 20;
+    party.food[0] = 12;
+    party.rations = 2;
+    const auto base = THIRDEYE::nn::OnlinePolicy::features(
+        10, 10, 0, {false, false, false, false});
+    const auto features = food::features(base, party, 0);
+    EXPECT_NEAR(features[7], 0.12, 1e-9);
+    EXPECT_NEAR(features[8], 0.85, 1e-9);
+    THIRDEYE::nn::OnlinePolicy brain;
+    for (int i = 0; i < 240; ++i)
+        ASSERT_TRUE(brain.reinforce(features, 2, 1.5, true));
+    const std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> available{
+        true, true, true, false, false, false
+    };
+    EXPECT_EQ(brain.select(features, available, 1.0, 0.5), 2);
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("thirdeye_food_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "food.ckpt";
+    std::string error;
+    ASSERT_TRUE(brain.save(file, error)) << error;
+    THIRDEYE::nn::OnlinePolicy restored;
+    ASSERT_TRUE(restored.load(file, error)) << error;
+    EXPECT_EQ(restored.samples(), 240u);
+    EXPECT_EQ(restored.select(features, available, 1.0, 0.5), 2);
+    EXPECT_DOUBLE_EQ(restored.meanReward(), brain.meanReward());
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
 }
 
 TEST(nnSurvival, RetreatsOnlyWithCriticalHPAndVerifiedEscape) {
