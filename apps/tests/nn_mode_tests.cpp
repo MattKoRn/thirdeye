@@ -164,29 +164,29 @@ TEST(nnDungeonHack, BothGamesUseSamePersistentBrainWithoutTouchingLegacyFiles) {
     EXPECT_NE(mode::legacyBrainFileForDocuments(documents, true), eob);
 }
 
-TEST(nnAutoAdvice, TwoSecondDeadlinesDoNotBurstAfterStalls) {
+TEST(nnAutoAdvice, OneSecondDeadlinesDoNotBurstAfterStalls) {
     using THIRDEYE::nn::advice::AutoChoicePacer;
     using Clock = AutoChoicePacer::Clock;
     AutoChoicePacer pacer;
     const auto t0 = Clock::time_point{};
     pacer.reset(t0);
     EXPECT_FALSE(pacer.ready(t0));
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::milliseconds(999)));
+    EXPECT_TRUE(pacer.ready(t0 + std::chrono::seconds(1)));
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::seconds(1)));
     EXPECT_FALSE(pacer.ready(t0 + std::chrono::milliseconds(1999)));
     EXPECT_TRUE(pacer.ready(t0 + std::chrono::seconds(2)));
-    EXPECT_FALSE(pacer.ready(t0 + std::chrono::seconds(2)));
-    EXPECT_FALSE(pacer.ready(t0 + std::chrono::milliseconds(3999)));
-    EXPECT_TRUE(pacer.ready(t0 + std::chrono::seconds(4)));
     pacer.reset(t0 + std::chrono::seconds(7)); // toggle F1 on again
-    EXPECT_FALSE(pacer.ready(t0 + std::chrono::seconds(8)));
-    EXPECT_TRUE(pacer.ready(t0 + std::chrono::seconds(9)));
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::milliseconds(7999)));
+    EXPECT_TRUE(pacer.ready(t0 + std::chrono::seconds(8)));
 
     pacer.reset(t0);
     EXPECT_TRUE(pacer.ready(t0 + std::chrono::minutes(5)));
     EXPECT_FALSE(pacer.ready(t0 + std::chrono::minutes(5)));
     EXPECT_FALSE(pacer.ready(t0 + std::chrono::minutes(5) +
-                             std::chrono::milliseconds(1999)));
+                             std::chrono::milliseconds(999)));
     EXPECT_TRUE(pacer.ready(t0 + std::chrono::minutes(5) +
-                            std::chrono::seconds(2)));
+                            std::chrono::seconds(1)));
 }
 
 TEST(nnDungeonHack, StandardLaunchRoutesToNativePhaseOneWithoutIntroGff) {
