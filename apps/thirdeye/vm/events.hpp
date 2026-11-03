@@ -143,12 +143,15 @@ public:
 			return x >= 0 && x <= 319 && y >= 0 && y <= 199 &&
 			       x0 >= 0 && y0 >= 0 && x1 < 320 && y1 < 200 &&
 			       x0 <= x && x <= x1 && y0 <= y && y <= y1 &&
-			       handle >= 2 && handlerClass >= 0 && handlerObject >= 0 && message >= 0 &&
+			       handle >= 2 && handle < 256 &&
+		       (x1 - x0 + 1) * (y1 - y0 + 1) <= 12000 &&
+		       handlerClass >= 0 && handlerObject >= 0 && message >= 0 &&
 			       (eventType == SYS_LEFT_CLICK_REGION ||
 			        eventType == SYS_CLICK_REGION);
 		}
 	};
 	LeftClick lastLeftClick() const { return mLastLeftClick; }
+	bool leftButtonDown() const { return mLastLeft; }
 	// Find a unique smallest active region receiving a left click at this
 	// position. Tied regions/unknown handlers are intentionally rejected.
 	LeftClick inspectLeftClickTarget(int32_t x, int32_t y) const;
