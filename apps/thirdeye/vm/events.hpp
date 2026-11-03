@@ -136,14 +136,14 @@ public:
 		uint64_t serial = 0;
 		int32_t x = -1, y = -1;
 		int32_t x0 = -1, y0 = -1, x1 = -1, y1 = -1;
-		int32_t handlerClass = -1, message = -1;
+		int32_t handlerClass = -1, handlerObject = -1, message = -1;
 		int32_t eventType = -1;
 		int32_t handle = -1;
 		bool valid() const {
 			return x >= 0 && x <= 319 && y >= 0 && y <= 199 &&
 			       x0 >= 0 && y0 >= 0 && x1 < 320 && y1 < 200 &&
 			       x0 <= x && x <= x1 && y0 <= y && y <= y1 &&
-			       handle >= 2 && handlerClass >= 0 && message >= 0 &&
+			       handle >= 2 && handlerClass >= 0 && handlerObject >= 0 && message >= 0 &&
 			       (eventType == SYS_LEFT_CLICK_REGION ||
 			        eventType == SYS_CLICK_REGION);
 		}
