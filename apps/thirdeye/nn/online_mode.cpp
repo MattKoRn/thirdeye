@@ -108,6 +108,7 @@ struct State {
         Pose before{};
         int action = -1;
         ActionPacer::Clock::time_point sent{};
+        uint64_t leftClickSerial = 0;
     };
     std::optional<AdvicePending> advicePending;
     const char *foodStatus = "idle";
@@ -591,7 +592,11 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
     const int travel = std::abs(trial.before.x - current.x) +
                        std::abs(trial.before.y - current.y);
     const int floors = std::abs(trial.before.level - current.level);
+    // User mouse clicks are never blocked outside the overlay, but an
+    // overlapping native click could have caused the observed movement.
+    // Refuse to attribute that outcome to the neural recommendation.
     const bool verified = observed &&
+        events.lastLeftClick().serial == trial.leftClickSerial &&
         ((floors == 0 && travel <= 1) ||
          (floors == 1 && trial.action < 4));
     if (verified) {
@@ -833,7 +838,8 @@ bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
     const int key = OnlinePolicy::keyForAction(action);
     if (key < 0) return false;
     g.advicePending = State::AdvicePending{
-        features, current, action, ActionPacer::Clock::now()};
+        features, current, action, ActionPacer::Clock::now(),
+        events.lastLeftClick().serial};
     g.adviceOpen = false;
     g.adviceReopen = true;
     events.postEvent(0, VM::SYS_KEYDOWN, key);
@@ -866,7 +872,10 @@ bool toggle() {
 }
 
 bool consumesManualKey(int32_t code) {
-    return active() && OnlinePolicy::actionForKey(code) >= 0;
+    // While a clicked recommendation is being measured, other movement
+    // keys cannot be credited to its reward. F1/ESC still work normally.
+    return (active() || g.advicePending.has_value()) &&
+           OnlinePolicy::actionForKey(code) >= 0;
 }
 
 const char *spellProbeStatus() { return g.spellProbe.status(); }
