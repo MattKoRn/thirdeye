@@ -831,7 +831,10 @@ const char *mouseState() {
 
 void setActive(bool enabled) {
     initialize();
+    const bool wasActive = g.autonomous;
     g.autonomous = enabled;
+    if (enabled && !wasActive)
+        g.failedUiOpenItem = -1; // explicit F1 user retry
     abortMouse(false);
     combat::cancel();
     g.pacer.reset(ActionPacer::Clock::now());
@@ -1115,10 +1118,17 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     // Observe first: a consumed item must not invalidate its own mouse release.
     observeFoodTrial(objects, events);
     if (g.uiNavigation && g.uiNavigation->clicked && uiActive) {
-        ++g.mouseScreens;
-        std::cout << "[nn] mouse navigated to native equipment UI"
-                  << " opens=" << g.mouseScreens
-                  << " screen=" << spellScreen(objects) << '\n';
+        // A camp/decision overlay is not proof of opening the character sheet.
+        if (spellScreen(objects) > 0) {
+            ++g.mouseScreens;
+            std::cout << "[nn] mouse navigated to native equipment UI"
+                      << " opens=" << g.mouseScreens
+                      << " screen=" << spellScreen(objects) << '\n';
+        } else {
+            g.failedUiOpenItem = g.uiNavigation->heldItem;
+            ++g.mouseAborts;
+            std::cout << "[nn] mouse navigation unverified UI overlay; retry suppressed\n";
+        }
         abortMouse(false);
     }
     tickHumanMouse(events, objects, eob3);
