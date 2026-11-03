@@ -109,8 +109,9 @@ inline std::array<bool, OnlinePolicy::kActions> frontierActions(
 
 // Pure helpers: testable without SDL or a running game.
 inline std::filesystem::path brainFileForDocuments(
-    const std::filesystem::path &documents) {
-    return documents / "ThirdeyeNN" / "brain.ckpt";
+    const std::filesystem::path &documents, bool dungeonHack = false) {
+    return documents / "ThirdeyeNN" /
+        (dungeonHack ? "brain-dungeon-hack.ckpt" : "brain.ckpt");
 }
 
 // Per-process brain. It uses the OS Documents folder, not the game-data
@@ -127,7 +128,8 @@ bool toggle();
 void setActive(bool enabled);
 bool consumesManualKey(int32_t code);
 
-// F1 now displays a player-controlled, 5-choice neural advice overlay.
+// F1 displays a modal, player-controlled five-choice neural advice overlay.
+// Works with both EOB3 and Dungeon Hack native level-map observations.
 // Each suggestion is a verified movement key, ranked from current learned
 // policy weights; clicking it executes ONE action, observes real changes,
 // and generates the next batch after training. No mouse takeover.
