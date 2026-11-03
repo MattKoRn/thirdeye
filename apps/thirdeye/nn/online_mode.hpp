@@ -154,8 +154,13 @@ const char *survivalCheckpointStatus();
 // iron ration in the kernel cursor; the native food-plate click is performed
 // through the existing game UI. Reward only if food increases and cursor
 // consumption is observed. No potion or guessed click coordinates are used.
-bool queueFoodProbe(VM::ObjectSystem &objects, int partySlot,
-                    std::string &error);
+bool queueFoodProbe(VM::ObjectSystem &objects, VM::EventSystem &events,
+                    int partySlot, std::string &error);
+// Click ONLY a previously verified native region, after matching the live
+// SOP handler, exact PC object, screen, and equipped cursor food class.
+bool useCalibratedFood(VM::ObjectSystem &objects, VM::EventSystem &events,
+                       int partySlot, std::string &error);
+std::size_t foodCalibrations();
 const char *foodProbeStatus();
 uint64_t foodSamples();
 double foodMeanReward();
