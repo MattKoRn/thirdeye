@@ -80,6 +80,30 @@ inline Batch generate(const OnlinePolicy &policy,
     return batch;
 }
 
+// Clock for SOP heartbeat pacing: elapsed time during an open advice menu
+// is excluded, so monsters and spell timers cannot fast-forward on resume.
+// Pure and deterministic, independently tested without SDL.
+class GameClock {
+public:
+    void beginPause(uint64_t nowMs) {
+        if (!paused_) { pauseBegin_ = nowMs; paused_ = true; }
+    }
+    void endPause(uint64_t nowMs) {
+        if (!paused_) return;
+        if (nowMs >= pauseBegin_) pausedMs_ += nowMs - pauseBegin_;
+        paused_ = false;
+    }
+    uint64_t activeMillis(uint64_t nowMs) const {
+        const uint64_t wall = paused_ ? pauseBegin_ : nowMs;
+        return wall >= pausedMs_ ? wall - pausedMs_ : 0;
+    }
+    bool paused() const { return paused_; }
+private:
+    bool paused_ = false;
+    uint64_t pausedMs_ = 0;
+    uint64_t pauseBegin_ = 0;
+};
+
 // Pixel hit-test matches the overlay's own row rectangles. Its guard
 // prevents clicks outside the menu from triggering a game action.
 inline int rowAt(int x, int y, int count) {
