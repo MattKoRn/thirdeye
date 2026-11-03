@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -145,6 +146,23 @@ private:
     bool paused_ = false;
     uint64_t pausedMs_ = 0;
     uint64_t pauseBegin_ = 0;
+};
+
+// F1 hands control to the same objective/feedback loop as manual advice.
+// A deadline is scheduled from each emitted action, not a host-pump counter;
+// a slow frame never produces a catch-up burst of movement keys.
+class AutoChoicePacer {
+public:
+    using Clock = std::chrono::steady_clock;
+    static constexpr auto kInterval = std::chrono::seconds(2);
+    void reset(Clock::time_point now) { next_ = now + kInterval; }
+    bool ready(Clock::time_point now) {
+        if (now < next_) return false;
+        next_ = now + kInterval;
+        return true;
+    }
+private:
+    Clock::time_point next_ = Clock::time_point::max();
 };
 
 // Pixel hit-test matches the overlay's own row rectangles. Its guard
