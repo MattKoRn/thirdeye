@@ -794,7 +794,10 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	}
 	sMapWasOpen = mapNowOpen;
 
-	gfx.update();                 // present whatever the bytecode has drawn
+	// When F1 is open, the advice panel and the game frame must be
+	// presented together; a bare-game SDL_RenderPresent here flashes the
+	// underlying screen between otherwise identical advice frames.
+	gfx.update(!THIRDEYE::nn::mode::adviceMenuOpen());
 	auto drawAdvice = [&]() {
 	if (THIRDEYE::nn::mode::adviceMenuOpen()) {
 		// Transient SDL overlay: no SOP statics, palette, or game screens are
@@ -851,7 +854,10 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 		adviceClock.beginPause(SDL_GetTicks());
 		while (THIRDEYE::nn::mode::adviceMenuOpen()) {
 			SDL_Event menuEvent{};
-			if (SDL_WaitEventTimeout(&menuEvent, 16)) {
+			bool repaint = false;
+			// No 60-Hz re-present while paused. The last frame remains on
+			// screen until the hover row or window surface actually changes.
+			if (SDL_WaitEventTimeout(&menuEvent, 100)) {
 				SDL_ConvertEventToRenderCoordinates(gfx.getRenderer(), &menuEvent);
 				switch (menuEvent.type) {
 				case SDL_EVENT_QUIT:
@@ -859,11 +865,18 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 					throw QuitRequested{};
 				case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
 					SDL_SetWindowBordered(gfx.getWindow(), true);
+					repaint = true;
+					break;
+				case SDL_EVENT_WINDOW_EXPOSED:
+				case SDL_EVENT_WINDOW_RESIZED:
+				case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+					repaint = true;
 					break;
 				case SDL_EVENT_KEY_DOWN:
 					if (menuEvent.key.repeat) break;
 					if (menuEvent.key.scancode == SDL_SCANCODE_F11) {
 						gfx.toggleFullscreen();
+						repaint = true;
 					} else if (menuEvent.key.scancode == SDL_SCANCODE_F1 ||
 					           menuEvent.key.key == SDLK_ESCAPE) {
 						THIRDEYE::nn::mode::closeAdviceMenu();
@@ -877,18 +890,26 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 						    THIRDEYE::runtime::uiScreenActive(objects));
 					}
 					break;
-				case SDL_EVENT_MOUSE_MOTION:
+				case SDL_EVENT_MOUSE_MOTION: {
+					int x = -1, y = -1;
 					gfx.mouseToLogical(
 					    static_cast<int>(menuEvent.motion.x),
-					    static_cast<int>(menuEvent.motion.y),
-					    adviceHoverX, adviceHoverY);
+					    static_cast<int>(menuEvent.motion.y), x, y);
+					repaint = THIRDEYE::nn::advice::hoverChanged(
+					    adviceHoverX, adviceHoverY, x, y,
+					    THIRDEYE::nn::mode::adviceMenuCount());
+					adviceHoverX = x; adviceHoverY = y;
 					break;
+				}
 				case SDL_EVENT_MOUSE_BUTTON_DOWN:
 					if (menuEvent.button.button == SDL_BUTTON_LEFT) {
 						int x = -1, y = -1;
 						gfx.mouseToLogical(
 						    static_cast<int>(menuEvent.button.x),
 						    static_cast<int>(menuEvent.button.y), x, y);
+						repaint = THIRDEYE::nn::advice::hoverChanged(
+						    adviceHoverX, adviceHoverY, x, y,
+						    THIRDEYE::nn::mode::adviceMenuCount());
 						adviceHoverX = x; adviceHoverY = y;
 						adviceConsumedLeftPress = true;
 						const int row = THIRDEYE::nn::advice::rowAt(
@@ -907,14 +928,16 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 				default: break;
 				}
 			}
-			if (THIRDEYE::nn::mode::adviceMenuOpen()) {
-				// Redraw only the cached game texture and advice, freezing
-				// animations/fades as well as all SOP VM/timer activity.
+			if (repaint && THIRDEYE::nn::mode::adviceMenuOpen()) {
 				gfx.redrawFrozenFrame();
 				drawAdvice();
 			}
 		}
 		adviceClock.endPause(SDL_GetTicks());
+		// Clear the overlay immediately on close, even if the bytecode
+		// doesn't draw another frame until its next input event.
+		gfx.redrawFrozenFrame();
+		SDL_RenderPresent(gfx.getRenderer());
 	}
 	if (!events.peekEvent())
 		SDL_Delay(10);            // idle: yield instead of spinning
@@ -1469,6 +1492,7 @@ void THIRDEYE::Engine::bootObject(RESOURCES::Resource &resource,
 					if (THIRDEYE::runtime::dh::ensureSavegameFiles(
 					        resource.resourcePath().parent_path(),
 					        /*regenerate=*/true)) {
+						THIRDEYE::nn::mode::resetForNewGame();
 						nextBoot = "phase-two";
 					} else {
 						std::cout << "DH dungeon generation failed -- quitting."
@@ -1631,6 +1655,7 @@ bool THIRDEYE::Engine::runExternalProgram(const std::string &program,
 		if (gfx) {
 			bool ok = THIRDEYE::chargen::runChargenScreen(*gfx, chargenDir);
 			if (ok) {
+				THIRDEYE::nn::mode::resetForNewGame();
 				// Paint the game's main stone Backdrop over the chargen's last
 				// frame before start.create's CHGN path begins drawing. The
 				// SOP draws specific UI elements (portraits, compass, dialog
