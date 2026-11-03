@@ -30,7 +30,8 @@ struct CalibratedClick {
     bool valid() const {
         return slot >= 0 && slot < 6 && actionForClass(itemClass) >= 0 &&
                screen >= 0 && screen <= 255 && click.valid() &&
-               click.handlerClass <= 65534 && click.message <= 65535;
+               click.handlerClass <= 65534 && click.handlerObject < 200000 &&
+               click.message <= 65535;
     }
 };
 
@@ -76,7 +77,8 @@ public:
             text << p.slot << ' ' << p.itemClass << ' ' << p.screen << ' '
                  << c.x << ' ' << c.y << ' ' << c.x0 << ' ' << c.y0 << ' '
                  << c.x1 << ' ' << c.y1 << ' ' << c.handlerClass << ' '
-                 << c.message << ' ' << c.eventType << ' ' << c.handle << '\n';
+                 << c.handlerObject << ' ' << c.message << ' ' << c.eventType
+                 << ' ' << c.handle << '\n';
         }
         const std::string payload = text.str();
         const auto staging = std::filesystem::path(path.string() + ".tmp");
@@ -137,7 +139,7 @@ public:
             if (!(data >> c.slot >> c.itemClass >> c.screen >>
                   c.click.x >> c.click.y >> c.click.x0 >> c.click.y0 >>
                   c.click.x1 >> c.click.y1 >> c.click.handlerClass >>
-                  c.click.message >> c.click.eventType >> c.click.handle) ||
+                  c.click.handlerObject >> c.click.message >> c.click.eventType >> c.click.handle) ||
                 !c.valid() || !staged.emplace(
                     key(c.slot, c.itemClass, c.screen), c).second) {
                 error = "invalid/duplicate actuator region"; return false;
