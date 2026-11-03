@@ -69,6 +69,42 @@ TEST(nnCheckpoint, LearningAndLoadedWeightsApplyImmediately) {
     EXPECT_EQ(live.predict(kContext).action, 3);
 }
 
+TEST(nnCheckpoint, AlternatingGamesShareTrainingAcrossFreshSessions) {
+    namespace mode = THIRDEYE::nn::mode;
+    TempCheckpoint tmp;
+    const auto shared = mode::brainFileForDocuments(tmp.dir);
+    fs::create_directories(shared.parent_path());
+    std::string error;
+
+    OnlinePolicy eobSession;
+    const auto initial = mode::restoreSharedBrain(eobSession, tmp.dir);
+    ASSERT_TRUE(initial.ready) << initial.error;
+    EXPECT_FALSE(initial.restored);
+    for (int i = 0; i < 25; ++i)
+        ASSERT_TRUE(eobSession.reinforce(kContext, 0, 1.8, true));
+    ASSERT_TRUE(eobSession.save(shared, error)) << error;
+
+    OnlinePolicy hackSession;
+    const auto hack = mode::restoreSharedBrain(hackSession, tmp.dir);
+    ASSERT_TRUE(hack.ready) << hack.error;
+    EXPECT_TRUE(hack.restored);
+    EXPECT_FALSE(hack.migrated);
+    EXPECT_EQ(hackSession.samples(), 25u);
+    EXPECT_EQ(hackSession.weights(), eobSession.weights());
+    for (int i = 0; i < 10; ++i)
+        ASSERT_TRUE(hackSession.reinforce(kContext, 1, -1.25, false));
+    ASSERT_TRUE(hackSession.save(shared, error)) << error;
+
+    OnlinePolicy anotherEobSession;
+    const auto reopened = mode::restoreSharedBrain(anotherEobSession, tmp.dir);
+    ASSERT_TRUE(reopened.ready) << reopened.error;
+    EXPECT_TRUE(reopened.restored);
+    EXPECT_EQ(anotherEobSession.samples(), 35u);
+    EXPECT_EQ(anotherEobSession.successes(), 25u);
+    EXPECT_EQ(anotherEobSession.failures(), 10u);
+    EXPECT_EQ(anotherEobSession.weights(), hackSession.weights());
+}
+
 TEST(nnCheckpoint, MergesLegacyEOB3AndDungeonHackBrainsExactlyOnce) {
     namespace mode = THIRDEYE::nn::mode;
     TempCheckpoint tmp;
