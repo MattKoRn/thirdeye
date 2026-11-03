@@ -102,6 +102,8 @@ struct State {
     advice::Batch adviceBatch;
     bool adviceOpen = false;
     bool adviceReopen = false;
+    bool autoAdvice = false;
+    advice::AutoChoicePacer autoChoicePacer;
     uint64_t adviceGeneration = 0;
     Pose advicePose{};
     std::string adviceResult = "Choose a neural suggestion to start learning.";
@@ -554,7 +556,8 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
 }
 
 
-bool regenerateAdvice(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
+bool regenerateAdvice(VM::ObjectSystem &objects, bool eob3, bool uiActive,
+                      bool showMenu = true) {
     if (uiActive || g.advicePending) return false;
     OnlinePolicy::Features features{};
     std::array<bool, 4> blocked{};
@@ -573,8 +576,9 @@ bool regenerateAdvice(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
     if (batch.count == 0) return false;
     g.adviceBatch = std::move(batch);
     g.advicePose = pose;
-    g.adviceOpen = true;
-    std::cout << "[nn] advice batch=" << g.adviceGeneration
+    g.adviceOpen = showMenu;
+    if (!showMenu) return true; // auto mode logs only attempted objectives
+    std::cout << "[nn] advice batch= << g.adviceGeneration
               << " count=" << g.adviceBatch.count
               << " trained_samples=" << g.brain.samples() << '\n';
     for (int i = 0; i < g.adviceBatch.count; ++i)
@@ -817,6 +821,7 @@ void resetForNewGame() {
     g.adviceOpen = false;
     g.adviceReopen = false;
     g.advicePending.reset();
+    g.autoChoicePacer.reset(advice::AutoChoicePacer::Clock::now());
     g.adviceBatch = {};
     g.adviceResult = "New game started; neural learning was preserved.";
     g.pending.reset();
@@ -843,6 +848,7 @@ void shutdown() {
     flushLearning();
     combat::shutdown();
     g.autonomous = false;
+    g.autoAdvice = false;
     g.adviceOpen = false;
     g.adviceReopen = false;
     g.advicePending.reset();
@@ -896,7 +902,8 @@ bool toggleAdviceMenu(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
 }
 bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
                   int row, bool eob3, bool uiActive) {
-    if (!g.adviceOpen || g.advicePending || uiActive ||
+    if ((!g.adviceOpen && !(automatic && g.autoAdvice)) ||
+        g.advicePending || uiActive ||
         row < 0 || row >= g.adviceBatch.count) return false;
     OnlinePolicy::Features features{};
     std::array<bool, 4> blocked{};
@@ -914,7 +921,7 @@ bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
     if (!canMove(action, blocked) || !target ||
         *target != objective.target) {
         g.adviceResult = "Action no longer passable; refreshing advice.";
-        regenerateAdvice(objects, eob3, uiActive);
+        regenerateAdvice(objects, eob3, uiActive, !automatic);
         return false;
     }
     const int key = OnlinePolicy::keyForAction(action);
@@ -923,18 +930,50 @@ bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
         features, current, action, objective.target, ActionPacer::Clock::now(),
         events.lastLeftClick().serial};
     g.adviceOpen = false;
-    g.adviceReopen = true;
+    g.adviceReopen = !automatic;
     events.postEvent(0, VM::SYS_KEYDOWN, key);
-    std::cout << "[nn] advice execute=" << objective.label
+    std::cout << "[nn] " << (automatic ? "auto-advice" : "advice")
+              << " execute=" << objective.label
               << " batch=" << g.adviceGeneration
               << " native_key=" << key << " awaiting_observed-outcome\n";
     return true;
 }
 
+bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
+                  int row, bool eob3, bool uiActive) {
+    return chooseAdviceImpl(events, objects, row, eob3, uiActive, false);
+}
+
+bool autoAdviceEnabled() { return g.autoAdvice; }
+
+void setAutoAdvice(bool enabled) {
+    initialize();
+    if (g.autoAdvice == enabled) return;
+    if (enabled && g.autonomous)
+        setActive(false); // only one movement learner emits native keys
+    g.autoAdvice = enabled;
+    g.adviceOpen = false;
+    g.adviceReopen = false;
+    g.adviceBatch = {};
+    g.autoChoicePacer.reset(advice::AutoChoicePacer::Clock::now());
+    if (!enabled) flushLearning();
+    std::cout << "[nn] F1 auto-select advice " << (enabled ? "ON" : "OFF")
+              << " interval=2s overlay=hidden samples=" << g.brain.samples()
+              << " checkpoint=" << checkpointStatus() << '\n';
+}
+
+bool toggleAutoAdvice() {
+    setAutoAdvice(!g.autoAdvice);
+    return g.autoAdvice;
+}
+
 void setActive(bool enabled) {
     initialize();
     g.autonomous = enabled;
-    if (enabled) closeAdviceMenu();
+    if (enabled) {
+        g.autoAdvice = false;
+        closeAdviceMenu();
+    }
     combat::cancel();
     g.pacer.reset(ActionPacer::Clock::now());
     g.pending.reset();
@@ -1240,6 +1279,23 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     }
     if (!eob3 && g.spellProbe.shouldOpen()) {
         g.spellProbe.fail(); // never send EOB3 magic messages to Dungeon Hack
+    }
+    if (g.autoAdvice) {
+        // F1 auto-select uses the SAME objective planner, native keyboard
+        // actuator, measured pose feedback and autosave as manual F1 advice.
+        // No SDL overlay, no mouse hijacking, and no parallel combat keys.
+        if (uiActive) {
+            g.autoChoicePacer.reset(advice::AutoChoicePacer::Clock::now());
+            return;
+        }
+        if (!g.autoChoicePacer.ready(advice::AutoChoicePacer::Clock::now()))
+            return;
+        combat::cancel();
+        if (!regenerateAdvice(objects, eob3, false, false))
+            return; // waiting for a valid live map; no fabricated action
+        if (!chooseAdviceImpl(events, objects, 0, eob3, false))
+            g.autoChoicePacer.reset(advice::AutoChoicePacer::Clock::now());
+        return;
     }
     if (eob3 && g.autonomous && !uiActive) observeSpellStock(objects);
     // Never interpret changes caused by menus or manual control as rewards.
