@@ -4,6 +4,7 @@
 #include "../thirdeye/nn/survival_mode.hpp"
 #include "../thirdeye/nn/food_learning.hpp"
 #include "../thirdeye/nn/food_actuator.hpp"
+#include "../thirdeye/nn/human_mouse.hpp"
 #include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
@@ -62,6 +63,72 @@ TEST(nnSpell, NativeProbeOnlyReportsVerifiedOpenAndClose) {
     probe.fail();
     EXPECT_EQ(probe.stage(), Probe::Stage::Failed);
     EXPECT_FALSE(probe.shouldClose());
+}
+
+TEST(nnMouse, HumanLikeMotionRequiresValidTargetAndIsTimeBounded) {
+    namespace mouse = THIRDEYE::nn::mouse;
+    using Clock = mouse::HumanMouse::Clock;
+    const auto start = Clock::now();
+    mouse::HumanMouse pilot;
+    EXPECT_FALSE(pilot.start(0, 0, 320, 100, start));
+    EXPECT_FALSE(pilot.start(-1, 0, 200, 30, start));
+    ASSERT_TRUE(pilot.start(12, 14, 232, 175, start, 7));
+    EXPECT_TRUE(pilot.busy());
+    EXPECT_FALSE(pilot.start(12, 14, 100, 100, start));
+    int moves = 0;
+    int previousX = 12, previousY = 14;
+    int presses = 0, releases = 0;
+    for (int elapsed = 0; elapsed <= 1600; elapsed += 25) {
+        const auto step = pilot.advance(start + std::chrono::milliseconds(elapsed));
+        if (step.kind == mouse::HumanMouse::Kind::Move) {
+            EXPECT_TRUE(mouse::HumanMouse::onScreen(step.x, step.y));
+            previousX = step.x;
+            previousY = step.y;
+            ++moves;
+        } else if (step.kind == mouse::HumanMouse::Kind::Press) {
+            EXPECT_EQ(step.x, 232);
+            EXPECT_EQ(step.y, 175);
+            EXPECT_EQ(previousX, 232);
+            EXPECT_EQ(previousY, 175);
+            EXPECT_TRUE(pilot.buttonHeld());
+            ++presses;
+        } else if (step.kind == mouse::HumanMouse::Kind::Release) {
+            EXPECT_EQ(step.x, 232);
+            EXPECT_EQ(step.y, 175);
+            EXPECT_FALSE(pilot.buttonHeld());
+            ++releases;
+        }
+    }
+    EXPECT_GE(moves, 8);
+    EXPECT_EQ(presses, 1);
+    EXPECT_EQ(releases, 1);
+    EXPECT_FALSE(pilot.busy());
+    EXPECT_EQ(pilot.advance(start + std::chrono::seconds(10)).kind,
+              mouse::HumanMouse::Kind::Idle);
+}
+
+TEST(nnMouse, F1CancellationStopsMouseAndRequestsHeldRelease) {
+    namespace mouse = THIRDEYE::nn::mouse;
+    using Clock = mouse::HumanMouse::Clock;
+    const auto now = Clock::now();
+    mouse::HumanMouse pilot;
+    ASSERT_TRUE(pilot.start(8, 13, 100, 80, now, 3));
+    EXPECT_FALSE(pilot.cancel()); // no press yet
+    EXPECT_FALSE(pilot.busy());
+    ASSERT_TRUE(pilot.start(8, 13, 100, 80, now, 3));
+    bool pressed = false;
+    for (int i = 0; i < 50; ++i) {
+        const auto step = pilot.advance(now + std::chrono::milliseconds(i * 30));
+        if (step.kind == mouse::HumanMouse::Kind::Press) {
+            pressed = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(pressed);
+    EXPECT_TRUE(pilot.buttonHeld());
+    EXPECT_TRUE(pilot.cancel());  // host must issue mouseButton(false,false)
+    EXPECT_FALSE(pilot.busy());
+    EXPECT_FALSE(pilot.cancel()); // no duplicate release
 }
 
 TEST(nnFood, NativeClickCalibrationRejectsAmbiguousOrUnrelatedTargets) {
