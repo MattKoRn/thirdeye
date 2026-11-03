@@ -355,7 +355,7 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	// Subtract time spent inside the modal neural advice overlay from the
 	// heartbeat. Otherwise the game jumps forward by the whole pause when
 	// the SOP VM resumes (timed enemy turns, spell timers, animations).
-	static uint64_t advicePausedMillis = 0;
+	static THIRDEYE::nn::advice::GameClock adviceClock;
 	SDL_Event ev;
 	while (SDL_PollEvent(&ev)) {
 		// SDL3 dropped SDL2's automatic event-coordinate rescaling under
@@ -562,7 +562,7 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	// behaviour (menu fade-in, cursor blink, animation). Coalesced into a single
 	// SYS_TIMER event (see EventSystem::postTimer / INTRFACE.C timer_callback).
 	events.postTimer(static_cast<int32_t>(
-	    (SDL_GetTicks() - advicePausedMillis) >> 5));
+	    adviceClock.activeMillis(SDL_GetTicks()) >> 5));
 
 	// Debug: THIRDEYE_AUTOWALK is the scripted-input test harness. Comma-separated
 	// tokens, one per ~40 pumps (last token repeats):
@@ -848,14 +848,14 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	// keyboard, mouse, or timer events while this loop runs. Only menu
 	// controls and window lifecycle events are handled here.
 	if (THIRDEYE::nn::mode::adviceMenuOpen()) {
-		const uint64_t pauseStart = SDL_GetTicks();
+		adviceClock.beginPause(SDL_GetTicks());
 		while (THIRDEYE::nn::mode::adviceMenuOpen()) {
 			SDL_Event menuEvent{};
 			if (SDL_WaitEventTimeout(&menuEvent, 16)) {
 				SDL_ConvertEventToRenderCoordinates(gfx.getRenderer(), &menuEvent);
 				switch (menuEvent.type) {
 				case SDL_EVENT_QUIT:
-					advicePausedMillis += SDL_GetTicks() - pauseStart;
+					adviceClock.endPause(SDL_GetTicks());
 					throw QuitRequested{};
 				case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
 					SDL_SetWindowBordered(gfx.getWindow(), true);
@@ -914,7 +914,7 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 				drawAdvice();
 			}
 		}
-		advicePausedMillis += SDL_GetTicks() - pauseStart;
+		adviceClock.endPause(SDL_GetTicks());
 	}
 	if (!events.peekEvent())
 		SDL_Delay(10);            // idle: yield instead of spinning
