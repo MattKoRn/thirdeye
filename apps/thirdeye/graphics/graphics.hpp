@@ -332,6 +332,10 @@ public:
 
 	uint32_t getSleep();
 	void update();
+	// Repaint the last game frame without advancing cinematics, fades,
+	// timers or any screen-state machine. Used by the F1 modal advice pause
+	// before drawing interactive SDL overlay rows.
+	void redrawFrozenFrame();
 	// ponytail: hook fired at the end of update() -- after all state-machine
 	// draws and the compass restamp, immediately before SDL_UpdateTexture and
 	// present. The automap uses this so its overlay lands ON TOP of anything
