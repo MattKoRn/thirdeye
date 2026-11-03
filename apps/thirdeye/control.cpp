@@ -197,6 +197,10 @@ std::string handle(const std::vector<std::string> &tok,
                    " advice_open=" + (nn::mode::adviceMenuOpen() ? "yes" : "no") +
                    " advice_generation=" + std::to_string(nn::mode::adviceMenuGeneration()) +
                    " advice_choices=" + std::to_string(nn::mode::adviceMenuCount()) +
+                   (runtime::gDungeonHack
+                       ? std::string(" dh_map=") +
+                         (runtime::dh::neuralSnapshot().valid ? "observed" : "pending")
+                       : std::string{}) +
                    "\nok\n";
         if (sub == "train" && tok.size() == 3 &&
             (tok[2] == "on" || tok[2] == "off")) {
