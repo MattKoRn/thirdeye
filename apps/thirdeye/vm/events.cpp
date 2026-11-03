@@ -468,6 +468,7 @@ EventSystem::LeftClick EventSystem::inspectLeftClickTarget(
 				// That is the same physical target, not two distinct targets.
 				if (best.handle == handle &&
 				    best.handlerClass == handlerClass &&
+				    best.handlerObject == request.client &&
 				    best.message == static_cast<int32_t>(request.message))
 					continue;
 				tied = true;
@@ -480,6 +481,7 @@ EventSystem::LeftClick EventSystem::inspectLeftClickTarget(
 			best.x0 = win.x0; best.y0 = win.y0;
 			best.x1 = win.x1; best.y1 = win.y1;
 			best.handlerClass = handlerClass;
+			best.handlerObject = request.client;
 			best.message = static_cast<int32_t>(request.message);
 			best.eventType = type;
 			best.handle = handle;
@@ -495,6 +497,7 @@ bool EventSystem::matchesLeftClickTarget(const LeftClick &recorded) const {
 	       current.y0 == recorded.y0 && current.x1 == recorded.x1 &&
 	       current.y1 == recorded.y1 &&
 	       current.handlerClass == recorded.handlerClass &&
+	       current.handlerObject == recorded.handlerObject &&
 	       current.message == recorded.message;
 }
 
