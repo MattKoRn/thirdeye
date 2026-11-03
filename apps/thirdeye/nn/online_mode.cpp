@@ -960,7 +960,7 @@ void setAutoAdvice(bool enabled) {
     g.autoChoicePacer.reset(advice::AutoChoicePacer::Clock::now());
     if (!enabled) flushLearning();
     std::cout << "[nn] F1 auto-select advice " << (enabled ? "ON" : "OFF")
-              << " interval=2s overlay=hidden samples=" << g.brain.samples()
+              << " interval=1s overlay=hidden samples=" << g.brain.samples()
               << " checkpoint=" << checkpointStatus() << '\n';
 }
 
