@@ -616,6 +616,21 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	    THIRDEYE::nn::rolling::partyState(objects) ==
 	        THIRDEYE::nn::rolling::Schedule::Party::Dead;
 	THIRDEYE::nn::mode::pump(events, objects, !gameplay || dead, eob3);
+	// Show the neural driver's gradual *game-window* cursor motion. SDL's
+	// inverse logical presentation transform handles letterbox/HiDPI/scale.
+	// Never warp the global pointer, and never move it if the game lost focus.
+	static uint64_t lastNeuralMouseMove = 0;
+	const uint64_t neuralMouseMove = THIRDEYE::nn::mode::mouseMoves();
+	if (THIRDEYE::nn::mode::ownsMouse() &&
+	    lastNeuralMouseMove != neuralMouseMove &&
+	    (SDL_GetWindowFlags(gfx.getWindow()) & SDL_WINDOW_INPUT_FOCUS)) {
+		float wx = 0.0f, wy = 0.0f;
+		if (SDL_RenderCoordinatesToWindow(
+		        gfx.getRenderer(), static_cast<float>(events.pointX()),
+		        static_cast<float>(events.pointY()), &wx, &wy))
+			SDL_WarpMouseInWindow(gfx.getWindow(), wx, wy);
+	}
+	lastNeuralMouseMove = neuralMouseMove;
 	if (ctx && eob3)
 		THIRDEYE::nn::rolling::tick(*ctx, THIRDEYE::nn::mode::active(),
 		                            gameplay && !dead);
