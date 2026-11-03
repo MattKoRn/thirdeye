@@ -352,6 +352,10 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 
 	static int adviceHoverX = -1, adviceHoverY = -1;
 	static bool adviceConsumedLeftPress = false;
+	// Subtract time spent inside the modal neural advice overlay from the
+	// heartbeat. Otherwise the game jumps forward by the whole pause when
+	// the SOP VM resumes (timed enemy turns, spell timers, animations).
+	static uint64_t advicePausedMillis = 0;
 	SDL_Event ev;
 	while (SDL_PollEvent(&ev)) {
 		// SDL3 dropped SDL2's automatic event-coordinate rescaling under
@@ -557,7 +561,8 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	// Heartbeat: a ~30 Hz monotonic timer that drives the bytecode's timed
 	// behaviour (menu fade-in, cursor blink, animation). Coalesced into a single
 	// SYS_TIMER event (see EventSystem::postTimer / INTRFACE.C timer_callback).
-	events.postTimer(static_cast<int32_t>(SDL_GetTicks() >> 5));
+	events.postTimer(static_cast<int32_t>(
+	    (SDL_GetTicks() - advicePausedMillis) >> 5));
 
 	// Debug: THIRDEYE_AUTOWALK is the scripted-input test harness. Comma-separated
 	// tokens, one per ~40 pumps (last token repeats):
@@ -790,6 +795,7 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	sMapWasOpen = mapNowOpen;
 
 	gfx.update();                 // present whatever the bytecode has drawn
+	auto drawAdvice = [&]() {
 	if (THIRDEYE::nn::mode::adviceMenuOpen()) {
 		// Transient SDL overlay: no SOP statics, palette, or game screens are
 		// modified. It remains clickable even under HiDPI logical scaling.
@@ -835,6 +841,80 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 		SDL_RenderDebugText(renderer, 21.0f, 181.0f,
 		                    "Click/1-5 to act | ESC/F1 close");
 		SDL_RenderPresent(renderer);
+	}
+	};
+	drawAdvice();
+	// F1 advice is a true modal pause. The VM cannot dispatch queued
+	// keyboard, mouse, or timer events while this loop runs. Only menu
+	// controls and window lifecycle events are handled here.
+	if (THIRDEYE::nn::mode::adviceMenuOpen()) {
+		const uint64_t pauseStart = SDL_GetTicks();
+		while (THIRDEYE::nn::mode::adviceMenuOpen()) {
+			SDL_Event menuEvent{};
+			if (SDL_WaitEventTimeout(&menuEvent, 16)) {
+				SDL_ConvertEventToRenderCoordinates(gfx.getRenderer(), &menuEvent);
+				switch (menuEvent.type) {
+				case SDL_EVENT_QUIT:
+					advicePausedMillis += SDL_GetTicks() - pauseStart;
+					throw QuitRequested{};
+				case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+					SDL_SetWindowBordered(gfx.getWindow(), true);
+					break;
+				case SDL_EVENT_KEY_DOWN:
+					if (menuEvent.key.repeat) break;
+					if (menuEvent.key.scancode == SDL_SCANCODE_F11) {
+						gfx.toggleFullscreen();
+					} else if (menuEvent.key.scancode == SDL_SCANCODE_F1 ||
+					           menuEvent.key.key == SDLK_ESCAPE) {
+						THIRDEYE::nn::mode::closeAdviceMenu();
+					} else if (menuEvent.key.scancode >= SDL_SCANCODE_1 &&
+					           menuEvent.key.scancode <= SDL_SCANCODE_5) {
+						THIRDEYE::nn::mode::chooseAdvice(
+						    events, objects,
+						    static_cast<int>(menuEvent.key.scancode -
+						                     SDL_SCANCODE_1),
+						    !THIRDEYE::runtime::gDungeonHack,
+						    THIRDEYE::runtime::uiScreenActive(objects));
+					}
+					break;
+				case SDL_EVENT_MOUSE_MOTION:
+					gfx.mouseToLogical(
+					    static_cast<int>(menuEvent.motion.x),
+					    static_cast<int>(menuEvent.motion.y),
+					    adviceHoverX, adviceHoverY);
+					break;
+				case SDL_EVENT_MOUSE_BUTTON_DOWN:
+					if (menuEvent.button.button == SDL_BUTTON_LEFT) {
+						int x = -1, y = -1;
+						gfx.mouseToLogical(
+						    static_cast<int>(menuEvent.button.x),
+						    static_cast<int>(menuEvent.button.y), x, y);
+						adviceHoverX = x; adviceHoverY = y;
+						adviceConsumedLeftPress = true;
+						const int row = THIRDEYE::nn::advice::rowAt(
+						    x, y, THIRDEYE::nn::mode::adviceMenuCount());
+						if (row >= 0)
+							THIRDEYE::nn::mode::chooseAdvice(
+							    events, objects, row,
+							    !THIRDEYE::runtime::gDungeonHack,
+							    THIRDEYE::runtime::uiScreenActive(objects));
+					}
+					break;
+				case SDL_EVENT_MOUSE_BUTTON_UP:
+					if (menuEvent.button.button == SDL_BUTTON_LEFT)
+						adviceConsumedLeftPress = false;
+					break;
+				default: break;
+				}
+			}
+			if (THIRDEYE::nn::mode::adviceMenuOpen()) {
+				// Repaint over the game's unchanged framebuffer. This keeps
+				// hover feedback responsive without running any SOP events.
+				gfx.update();
+				drawAdvice();
+			}
+		}
+		advicePausedMillis += SDL_GetTicks() - pauseStart;
 	}
 	if (!events.peekEvent())
 		SDL_Delay(10);            // idle: yield instead of spinning
