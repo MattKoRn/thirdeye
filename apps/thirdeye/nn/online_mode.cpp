@@ -3,6 +3,7 @@
 #include "food_learning.hpp"
 #include "food_actuator.hpp"
 #include "advice_menu.hpp"
+#include "dungeon_hack_context.hpp"
 #include "../runtime/internal.hpp"
 #include "online_policy.hpp"
 #include "spell_probe.hpp"
@@ -182,6 +183,20 @@ int readField(VM::ObjectSystem &objects, int obj, uint16_t cls,
 
 bool context(VM::ObjectSystem &objects, OnlinePolicy::Features &features,
              std::array<bool, 4> &blocked, Pose *pose = nullptr) {
+    // Dungeon Hack's HACK.RES owns different SOP classes/statics from EOB3.
+    // Its real native renderer publishes the party/map through verified
+    // draw_walls and load_level_map runtime arguments.
+    if (runtime::gDungeonHack) {
+        const auto native = runtime::dh::neuralSnapshot();
+        dungeon_hack::View view;
+        view.x = native.x;
+        view.y = native.y;
+        view.facing = native.facing;
+        view.level = native.level;
+        view.tiles = native.tiles;
+        view.valid = native.valid;
+        return dungeon_hack::observe(view, features, blocked, pose);
+    }
     const int kernel = objects.firstObjectOfClass(kKernelClass);
     const int dungeon = objects.firstObjectOfClass(kDungeonClass);
     if (kernel < 0 || dungeon < 0) return false;
@@ -531,7 +546,7 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
 
 
 bool regenerateAdvice(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
-    if (!eob3 || uiActive || g.advicePending) return false;
+    if (uiActive || g.advicePending) return false;
     OnlinePolicy::Features features{};
     std::array<bool, 4> blocked{};
     Pose pose{};
@@ -587,7 +602,7 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
     OnlinePolicy::Features currentFeatures{};
     std::array<bool, 4> blocked{};
     Pose current{};
-    const bool observed = eob3 && !uiActive &&
+    const bool observed = !uiActive &&
         context(objects, currentFeatures, blocked, &current);
     const int travel = std::abs(trial.before.x - current.x) +
                        std::abs(trial.before.y - current.y);
@@ -632,10 +647,12 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
         std::cout << "[nn] advice outcome unverified (screen/pose changed)"
                   << " trained=no\n";
     }
-    if (g.adviceReopen && !uiActive && eob3) {
-        g.adviceReopen = false;
-        regenerateAdvice(objects, eob3, uiActive);
-    } else g.adviceReopen = false;
+    if (g.adviceReopen && !uiActive) {
+        if (regenerateAdvice(objects, eob3, uiActive))
+            g.adviceReopen = false;
+        // On a scene transition keep the request until the next playable
+        // game view; never force an input into a character sheet or cutscene.
+    }
 }
 
 bool canMove(int action, const std::array<bool, 4> &blocked) {
@@ -659,7 +676,12 @@ void initialize() {
         reportStorageError("Documents folder could not be located");
         return;
     }
-    const auto file = brainFileForDocuments(documents);
+    // Both games use exactly the same model/reward interface, but keep
+    // their policy weights in separate v2 checkpoint files. No migration or
+    // overwrite of existing EOB3 brain.ckpt is required.
+    const auto file = runtime::gDungeonHack
+        ? documents / "ThirdeyeNN" / "brain-dungeon-hack.ckpt"
+        : brainFileForDocuments(documents);
     const auto folder = file.parent_path();
     std::error_code ec;
     std::filesystem::create_directories(folder, ec);
@@ -817,7 +839,7 @@ bool toggleAdviceMenu(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
 }
 bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
                   int row, bool eob3, bool uiActive) {
-    if (!g.adviceOpen || g.advicePending || !eob3 || uiActive ||
+    if (!g.adviceOpen || g.advicePending || uiActive ||
         row < 0 || row >= g.adviceBatch.count) return false;
     OnlinePolicy::Features features{};
     std::array<bool, 4> blocked{};
