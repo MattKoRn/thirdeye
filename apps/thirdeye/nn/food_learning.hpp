@@ -20,6 +20,15 @@ inline int actionForClass(unsigned cls) {
     }
 }
 
+inline int classForAction(int action) {
+    switch (action) {
+    case 0: return 1347;
+    case 1: return 1451;
+    case 2: return 1456;
+    default: return -1;
+    }
+}
+
 struct Observation {
     int pc = -1;
     int item = -1;
