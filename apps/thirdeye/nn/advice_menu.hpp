@@ -44,7 +44,9 @@ inline Batch generate(const OnlinePolicy &policy,
     Batch batch;
     batch.generation = generation;
     batch.learnedSamples = policy.samples();
-    if (!OnlinePolicy::validFeatures(features)) return batch;
+    if (!std::all_of(features.begin(), features.end(), [](double value) {
+            return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+        })) return batch;
     std::array<Suggestion, OnlinePolicy::kActions> sorted{};
     int n = 0;
     for (int action = 0; action < static_cast<int>(OnlinePolicy::kActions); ++action) {
