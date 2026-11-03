@@ -18,7 +18,6 @@
 #include <optional>
 #include <random>
 #include <unordered_set>
-#include <unordered_set>
 #include <string>
 #include <system_error>
 
@@ -291,10 +290,12 @@ survival::Party partyResources(VM::ObjectSystem &objects) {
         const int hp = readWord(objects, pc, kPcClass, 171);
         const int maximum = readWord(objects, pc, kPcClass, 173);
         const int food = readWord(objects, pc, kPcClass, 177);
-        if (hp < 0 || maximum <= 0 || hp > maximum || food < 0)
+        if (maximum <= 0 || hp > maximum || food < 0)
             return {}; // invalid statics; no safety-critical decisions
         party.ids[slot] = pc;
-        party.hp[slot] = hp;
+        // EOB3 can retain a negative HP value for a fallen PC. Treat that
+        // member as at zero rather than suppressing retreat for survivors.
+        party.hp[slot] = std::max(hp, 0);
         party.maximum[slot] = maximum;
         party.food[slot] = food;
         // Inventory pointers are not consumption commands. Distinct items
