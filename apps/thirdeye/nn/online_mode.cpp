@@ -1308,7 +1308,7 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         combat::cancel();
         if (!regenerateAdvice(objects, eob3, false, false))
             return; // waiting for a valid live map; no fabricated action
-        if (!chooseAdviceImpl(events, objects, 0, eob3, false))
+        if (!chooseAdviceImpl(events, objects, 0, eob3, false, true))
             g.autoChoicePacer.reset(advice::AutoChoicePacer::Clock::now());
         return;
     }
