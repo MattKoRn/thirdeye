@@ -51,6 +51,8 @@ void EventSystem::reset() {
 		mWindows[i] = Win{0, 0, 319, 199, -1, true};
 	mPointX = mPointY = 0;
 	mLastLeft = mLastRight = false;
+	mLeftClickSerial = 0;
+	mLastLeftClick = {};
 
 	// Timer rebase: in DOS every program launch() EXEC-REPLACES the process,
 	// so INTRFACE.C's heartbeat restarts at 0 for each program (menu, game,
@@ -434,6 +436,68 @@ void EventSystem::addRegionEvent(int32_t type, int32_t owner) {
 	}
 }
 
+// Capture the *actual registered* SOP target of a native left click. We
+// refuse ambiguous same-size listeners instead of accidentally teaching the
+// neural controller an unrelated whole-screen or inventory control.
+EventSystem::LeftClick EventSystem::inspectLeftClickTarget(
+	int32_t x, int32_t y) const {
+	LeftClick best;
+	int64_t bestArea = 100000000;
+	bool tied = false;
+	if (x < 0 || x >= 320 || y < 0 || y >= 200) return best;
+	for (int32_t type : {SYS_LEFT_CLICK_REGION, SYS_CLICK_REGION}) {
+		for (int32_t next = mNRfirst[type]; next != -1;) {
+			const NReq &request = mNR[next];
+			next = request.next;
+			const int handle = request.parameter;
+			if (handle < 2 || handle >= MAX_WINDOWS ||
+			    !mWindows[handle].used || mWindows[handle].offscreen ||
+			    request.client < 0) continue;
+			const Win &win = mWindows[handle];
+			if (win.x0 > x || win.x1 < x || win.y0 > y ||
+			    win.y1 < y || win.x0 < 0 || win.y0 < 0 ||
+			    win.x1 >= 320 || win.y1 >= 200) continue;
+			const int handlerClass = mObjects.classOf(request.client);
+			if (handlerClass == 0xffff) continue;
+			const int64_t area =
+				static_cast<int64_t>(win.x1 - win.x0 + 1) *
+				static_cast<int64_t>(win.y1 - win.y0 + 1);
+			if (area <= 0 || area > 12000 || area > bestArea) continue;
+			if (area == bestArea) {
+				// The same request can listen to two related region events.
+				// That is the same physical target, not two distinct targets.
+				if (best.handle == handle &&
+				    best.handlerClass == handlerClass &&
+				    best.message == static_cast<int32_t>(request.message))
+					continue;
+				tied = true;
+				continue;
+			}
+			bestArea = area;
+			tied = false;
+			best = {};
+			best.x = x; best.y = y;
+			best.x0 = win.x0; best.y0 = win.y0;
+			best.x1 = win.x1; best.y1 = win.y1;
+			best.handlerClass = handlerClass;
+			best.message = static_cast<int32_t>(request.message);
+			best.eventType = type;
+			best.handle = handle;
+		}
+	}
+	return tied ? LeftClick{} : best;
+}
+
+bool EventSystem::matchesLeftClickTarget(const LeftClick &recorded) const {
+	if (!recorded.valid()) return false;
+	const LeftClick current = inspectLeftClickTarget(recorded.x, recorded.y);
+	return current.valid() && current.x0 == recorded.x0 &&
+	       current.y0 == recorded.y0 && current.x1 == recorded.x1 &&
+	       current.y1 == recorded.y1 &&
+	       current.handlerClass == recorded.handlerClass &&
+	       current.message == recorded.message;
+}
+
 // mouse_event_handler(): record the position, post a (coalesced) SYS_MOUSEMOVE,
 // and raise ENTER/LEAVE region events as the mouse crosses registered windows.
 void EventSystem::mouseMove(int32_t x, int32_t y) {
@@ -505,6 +569,10 @@ void EventSystem::postTimer(int32_t heartbeat) {
 // release events plus the region variants for the window under the mouse.
 void EventSystem::mouseButton(bool left, bool right) {
 	if (left != mLastLeft) {
+		if (left) {
+			mLastLeftClick = inspectLeftClickTarget(mPointX, mPointY);
+			mLastLeftClick.serial = ++mLeftClickSerial;
+		}
 		addEvent(left ? SYS_CLICK : SYS_RELEASE, 0, -1);
 		addEvent(left ? SYS_LEFT_CLICK : SYS_LEFT_RELEASE, 0, -1);
 		addRegionEvent(left ? SYS_LEFT_CLICK_REGION : SYS_LEFT_RELEASE_REGION, -1);
