@@ -1,5 +1,6 @@
 #include "online_mode.hpp"
 #include "combat_mode.hpp"
+#include "food_learning.hpp"
 #include "online_policy.hpp"
 #include "spell_probe.hpp"
 #include "survival_mode.hpp"
@@ -37,6 +38,13 @@ constexpr std::array<const char *, OnlinePolicy::kActions> kActionNames{
 struct State {
     OnlinePolicy brain;
     OnlinePolicy survivalBrain;
+    OnlinePolicy foodBrain;
+    std::filesystem::path foodFile;
+    bool foodStorageReady = false;
+    bool foodDirty = false;
+    bool foodCheckpointPresent = false;
+    bool foodWarned = false;
+    uint64_t savedFoodSamples = 0;
     std::filesystem::path file;
     std::filesystem::path survivalFile;
     bool survivalStorageReady = false;
@@ -66,6 +74,14 @@ struct State {
         int action = -1;
     };
     std::optional<RetreatPending> retreatPending;
+    struct FoodTrial {
+        food::Observation before;
+        OnlinePolicy::Features features{};
+        int slot = -1;
+        ActionPacer::Clock::time_point started{};
+    };
+    std::optional<FoodTrial> foodTrial;
+    const char *foodStatus = "idle";
     std::optional<Pose> failurePose;
     std::array<bool, OnlinePolicy::kActions> failedActions{};
     std::unordered_set<uint32_t> visited;
@@ -314,6 +330,93 @@ survival::Party partyResources(VM::ObjectSystem &objects) {
     return party;
 }
 
+
+void autoSaveFood(bool force) {
+    if (!g.foodStorageReady || !g.foodDirty) return;
+    if (!force && g.foodBrain.samples() - g.savedFoodSamples < 8)
+        return;
+    std::string error;
+    if (g.foodBrain.save(g.foodFile, error)) {
+        g.savedFoodSamples = g.foodBrain.samples();
+        g.foodDirty = false;
+        g.foodCheckpointPresent = true;
+        std::cout << "[nn] verified food checkpoint saved samples="
+                  << g.savedFoodSamples << " path=" << g.foodFile.string() << '\n';
+    } else if (!g.foodWarned) {
+        std::cerr << "[nn] food checkpoint error: " << error << '\n';
+        g.foodWarned = true;
+    }
+}
+
+food::Observation foodSnapshot(VM::ObjectSystem &objects, int slot) {
+    food::Observation o;
+    const int kernel = objects.firstObjectOfClass(kKernelClass);
+    if (kernel < 0 || slot < 0 || slot >= 6) return o;
+    o.pc = readWord(objects, kernel, kKernelClass, 229 + slot * 2);
+    if (o.pc < 0 || objects.classOf(o.pc) == 0xffff ||
+        !objects.isSubclassOf(objects.classOf(o.pc), kPcClass))
+        return {};
+    o.item = readWord(objects, kernel, kKernelClass, 241);
+    o.cursorItem = o.item;
+    o.itemClass = o.item >= 0 && objects.classOf(o.item) != 0xffff
+        ? objects.classOf(o.item) : -1;
+    o.level = readField(objects, kernel, kKernelClass, 246);
+    o.food = readWord(objects, o.pc, kPcClass, 177);
+    o.hitpoints = std::max(0, readWord(objects, o.pc, kPcClass, 171));
+    o.maxHitpoints = readWord(objects, o.pc, kPcClass, 173);
+    return o;
+}
+
+void observeFoodTrial(VM::ObjectSystem &objects) {
+    if (!g.foodTrial) return;
+    const auto pending = *g.foodTrial;
+    const auto after = foodSnapshot(objects, pending.slot);
+    // Since the cursor item may disappear on success, retain the original
+    // item/class identity; it is the cursor transition that proves consumption.
+    const auto outcome = food::evaluate(pending.before, after);
+    if (outcome) {
+        g.foodTrial.reset();
+        g.foodStatus = "verified";
+        const int action =
+            food::actionForClass(static_cast<unsigned>(pending.before.itemClass));
+        if (g.trainingEnabled && g.foodBrain.reinforce(
+                pending.features, action, outcome->reward, true)) {
+            g.foodDirty = true;
+            autoSaveFood(false);
+        }
+        std::cout << "[nn] native food verified"
+                  << " item_class=" << pending.before.itemClass
+                  << " slot=" << pending.slot
+                  << " food_gain=" << outcome->foodGain
+                  << " hp_delta=" << outcome->hpGain
+                  << " reward=" << outcome->reward
+                  << " food_samples=" << g.foodBrain.samples()
+                  << " food_mean_reward=" << g.foodBrain.meanReward()
+                  << " checkpoint=" << (g.foodDirty ? "pending" :
+                         (g.foodCheckpointPresent ? "saved" : "new"))
+                  << '\n';
+        return;
+    }
+    // Cursor changes without a food increase could be a dropped/equipped
+    // item, not evidence of attempted feeding. NEVER train such an event.
+    if (after.pc != pending.before.pc ||
+        after.level != pending.before.level ||
+        after.cursorItem != pending.before.cursorItem ||
+        after.food < pending.before.food ||
+        ActionPacer::Clock::now() - pending.started >=
+            std::chrono::seconds(30)) {
+        g.foodStatus = "unverified";
+        g.foodTrial.reset();
+        std::cout << "[nn] native food probe unverified"
+                  << " item_class=" << pending.before.itemClass
+                  << " slot=" << pending.slot
+                  << " food_before=" << pending.before.food
+                  << " food_after=" << after.food
+                  << " cursor_after=" << after.cursorItem
+                  << " learned=no\n";
+    }
+}
+
 bool canMove(int action, const std::array<bool, 4> &blocked) {
     switch (action) {
     case 0: return !blocked[0]; // forward
@@ -387,6 +490,29 @@ void initialize() {
         std::cerr << "[nn] survival checkpoint unavailable: "
                   << survivalError.message() << '\n';
     }
+    // A separate v2 food outcome model. Old weights and nn-1..3 native
+    // game saves never need migration; corrupt existing sidecars are preserved.
+    g.foodFile = folder / "food.ckpt";
+    g.foodStorageReady = true;
+    std::error_code foodError;
+    if (std::filesystem::exists(g.foodFile, foodError) && !foodError) {
+        std::string error;
+        if (g.foodBrain.load(g.foodFile, error)) {
+            g.savedFoodSamples = g.foodBrain.samples();
+            g.foodCheckpointPresent = true;
+            std::cout << "[nn] food checkpoint restored samples="
+                      << g.savedFoodSamples << " path="
+                      << g.foodFile.string() << '\n';
+        } else {
+            g.foodStorageReady = false;
+            std::cerr << "[nn] existing food checkpoint rejected: "
+                      << error << '\n';
+        }
+    } else if (foodError) {
+        g.foodStorageReady = false;
+        std::cerr << "[nn] food checkpoint unavailable: "
+                  << foodError.message() << '\n';
+    }
     // Independent v2 sidecar; legacy movement checkpoints remain unchanged.
     combat::initialize(folder / "combat.ckpt");
 }
@@ -395,6 +521,7 @@ void flushLearning() {
     if (!g.initialized) return;
     autoSave(true);
     autoSaveSurvival(true);
+    autoSaveFood(true);
     combat::flushLearning();
 }
 
@@ -405,6 +532,7 @@ void shutdown() {
     g.autonomous = false;
     g.pending.reset();
     g.retreatPending.reset();
+    g.foodTrial.reset();
 }
 
 std::filesystem::path checkpointPath() {
@@ -421,6 +549,8 @@ void setActive(bool enabled) {
     g.pacer.reset(ActionPacer::Clock::now());
     g.pending.reset();
     g.retreatPending.reset();
+    g.foodTrial.reset();
+    g.foodStatus = "idle";
     g.failurePose.reset();
     g.failedActions.fill(false);
     for (auto &value : g.spellBaselines) value = {};
@@ -486,6 +616,63 @@ bool training() { return g.trainingEnabled; }
 uint64_t samples() { initialize(); return g.brain.samples(); }
 double meanLoss() { initialize(); return g.brain.meanLoss(); }
 
+bool queueFoodProbe(VM::ObjectSystem &objects, int slot,
+                    std::string &error) {
+    initialize();
+    error.clear();
+    if (!g.autonomous || !g.trainingEnabled) {
+        error = "native food probe requires neural auto and training";
+        return false;
+    }
+    if (g.foodTrial) { error = "native food probe already running"; return false; }
+    if (slot < 0 || slot >= 6) { error = "invalid party slot"; return false; }
+    const auto before = foodSnapshot(objects, slot);
+    if (before.item < 0 || before.pc < 0 ||
+        food::actionForClass(static_cast<unsigned>(before.itemClass)) < 0) {
+        error = "hold a verified food-class item in the native cursor";
+        return false;
+    }
+    if (before.food < 0 || before.food >= 100 ||
+        before.hitpoints <= 0 || before.maxHitpoints <= 0) {
+        error = "target must be alive and hungry";
+        return false;
+    }
+    if (before.level < 0) { error = "invalid party level"; return false; }
+    const auto party = partyResources(objects);
+    if (!survival::valid(party) || party.ids[slot] != before.pc) {
+        error = "party state unavailable";
+        return false;
+    }
+    const int kernel = objects.firstObjectOfClass(kKernelClass);
+    OnlinePolicy::Features base = OnlinePolicy::features(
+        readField(objects, kernel, kKernelClass, 243),
+        readField(objects, kernel, kKernelClass, 244),
+        readField(objects, kernel, kKernelClass, 245),
+        {false, false, false, false});
+    g.foodTrial = State::FoodTrial{
+        before, food::features(base, party, slot), slot,
+        ActionPacer::Clock::now()
+    };
+    g.foodStatus = "armed";
+    std::cout << "[nn] native food trial armed slot=" << slot
+              << " item_class=" << before.itemClass
+              << " food_before=" << before.food
+              << " hp_before=" << before.hitpoints
+              << " action=use-native-food-plate"
+              << " pending=confirm-consumption\n";
+    return true;
+}
+
+const char *foodProbeStatus() { return g.foodStatus; }
+uint64_t foodSamples() { initialize(); return g.foodBrain.samples(); }
+double foodMeanReward() { initialize(); return g.foodBrain.meanReward(); }
+const char *foodCheckpointStatus() {
+    initialize();
+    if (!g.foodStorageReady) return "unavailable";
+    if (g.foodDirty) return "pending";
+    return g.foodCheckpointPresent ? "saved" : "new";
+}
+
 double survivalMeanReward() { initialize(); return g.survivalBrain.meanReward(); }
 double survivalSuccessRate() { initialize(); return g.survivalBrain.successRate(); }
 uint64_t survivalSamples() { initialize(); return g.survivalBrain.samples(); }
@@ -534,6 +721,9 @@ bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
 void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
           bool uiActive, bool eob3) {
     combat::release(events); // always release pending click on next host pump
+    // Native feeding is confirmed by the SOP after the player/control socket
+    // operates its already-verified food plate. Observe even in equipment UI.
+    observeFoodTrial(objects);
     if (g.spellProbe.shouldClose()) {
         closeSpellProbe(objects); // close even if autonomy toggled off or UI is up
         combat::cancel();
@@ -752,6 +942,8 @@ bool loadFrom(const std::filesystem::path &path, std::string &error) {
     if (!g.brain.load(path, error)) return false;
     combat::cancel();
     g.retreatPending.reset();
+    g.foodTrial.reset();
+    g.foodStatus = "idle";
     if (g.spellProbe.shouldOpen()) g.spellProbe.fail();
     // Do not train the imported weights on feedback from a pre-import action.
     g.pending.reset();
