@@ -194,6 +194,7 @@ std::string handle(const std::vector<std::string> &tok,
                    " spell_probe=" + nn::mode::spellProbeStatus() +
                    " self_train=" + (nn::mode::training() ? "on" : "off") +
                    " auto=" + (nn::mode::active() ? "on" : "off") +
+                   " advice_auto=" + (nn::mode::autoAdviceEnabled() ? "on" : "off") +
                    " advice_open=" + (nn::mode::adviceMenuOpen() ? "yes" : "no") +
                    " advice_generation=" + std::to_string(nn::mode::adviceMenuGeneration()) +
                    " advice_choices=" + std::to_string(nn::mode::adviceMenuCount()) +
@@ -208,6 +209,13 @@ std::string handle(const std::vector<std::string> &tok,
             return "ok\n";
         }
         if (sub == "advice") {
+            if (tok.size() == 4 && tok[2] == "auto" &&
+                (tok[3] == "on" || tok[3] == "off")) {
+                nn::mode::setAutoAdvice(tok[3] == "on");
+                return "nn advice auto " +
+                    std::string(nn::mode::autoAdviceEnabled() ? "on" : "off") +
+                    " interval=2s overlay=hidden\nok\n";
+            }
             if (tok.size() == 3 && tok[2] == "close") {
                 nn::mode::closeAdviceMenu();
                 return "nn advice menu closed\nok\n";
@@ -230,12 +238,13 @@ std::string handle(const std::vector<std::string> &tok,
             } else if (tok.size() != 3 ||
                        (tok[2] != "list" && tok[2] != "status" &&
                         tok[2] != "open")) {
-                return "err nn advice <open|list|choose 1..5|close|status>\n";
+                return "err nn advice <open|list|choose 1..5|close|status|auto on/off>\n";
             }
             std::string out = "nn advice game=" +
                 std::string(runtime::gDungeonHack ? "dungeon-hack" : "eob3") +
                 " open=" +
                 std::string(nn::mode::adviceMenuOpen() ? "yes" : "no") +
+                " auto=" + (nn::mode::autoAdviceEnabled() ? "on" : "off") +
                 " batch=" + std::to_string(nn::mode::adviceMenuGeneration()) +
                 " count=" + std::to_string(nn::mode::adviceMenuCount()) +
                 " last=" + nn::mode::adviceLastResult() + "\n";
