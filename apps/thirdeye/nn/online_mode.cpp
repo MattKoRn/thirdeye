@@ -625,6 +625,10 @@ bool queueFoodProbe(VM::ObjectSystem &objects, int slot,
         return false;
     }
     if (g.foodTrial) { error = "native food probe already running"; return false; }
+    if (g.spellProbe.busy()) { error = "finish spell probe first"; return false; }
+    if (objects.firstObjectOfClass(kMagicClass) < 0) {
+        error = "native EOB3 game required"; return false;
+    }
     if (slot < 0 || slot >= 6) { error = "invalid party slot"; return false; }
     const auto before = foodSnapshot(objects, slot);
     if (before.item < 0 || before.pc < 0 ||
@@ -661,6 +665,45 @@ bool queueFoodProbe(VM::ObjectSystem &objects, int slot,
               << " action=use-native-food-plate"
               << " pending=confirm-consumption\n";
     return true;
+}
+
+
+std::string foodRecommendation(VM::ObjectSystem &objects, int slot) {
+    initialize();
+    if (slot < 0 || slot >= 6) return "err invalid party slot\n";
+    if (g.foodBrain.samples() == 0)
+        return "err food preference untrained: verify native food outcomes first\n";
+    const int kernel = objects.firstObjectOfClass(kKernelClass);
+    const auto party = partyResources(objects);
+    if (kernel < 0 || !survival::valid(party) || party.ids[slot] < 0)
+        return "err party state unavailable\n";
+    std::array<bool, OnlinePolicy::kActions> allowed{};
+    auto add = [&](int item) {
+        if (item < 0 || objects.classOf(item) == 0xffff) return;
+        const int action = food::actionForClass(objects.classOf(item));
+        if (action >= 0)
+            allowed[static_cast<std::size_t>(action)] = true;
+    };
+    add(readWord(objects, kernel, kKernelClass, 241)); // in-hand food
+    for (int pc : party.ids) {
+        if (pc < 0) continue;
+        for (int i = 0; i < 26; ++i)
+            add(readWord(objects, pc, kPcClass, 81 + i * 2));
+    }
+    const auto base = OnlinePolicy::features(
+        readField(objects, kernel, kKernelClass, 243),
+        readField(objects, kernel, kKernelClass, 244),
+        readField(objects, kernel, kKernelClass, 245),
+        {false, false, false, false});
+    const auto features = food::features(base, party, slot);
+    const int choice = g.foodBrain.select(features, allowed, 1.0, 0.5);
+    if (choice < 0) return "err no known food class carried\n";
+    return "nn food preferred_class=" +
+           std::to_string(food::classForAction(choice)) +
+           " target_slot=" + std::to_string(slot) +
+           " food=" + std::to_string(party.food[slot]) +
+           " samples=" + std::to_string(g.foodBrain.samples()) +
+           " action=diagnostic-only-no-automatic-item-use\nok\n";
 }
 
 const char *foodProbeStatus() { return g.foodStatus; }
@@ -724,6 +767,15 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     // Native feeding is confirmed by the SOP after the player/control socket
     // operates its already-verified food plate. Observe even in equipment UI.
     observeFoodTrial(objects);
+    if (g.foodTrial) {
+        // Preserve the food plate/UI sequence; no parallel autonomous keys
+        // or combat clicks while awaiting real native consumption evidence.
+        combat::cancel();
+        g.pending.reset();
+        g.retreatPending.reset();
+        g.pacer.reset(ActionPacer::Clock::now());
+        return;
+    }
     if (g.spellProbe.shouldClose()) {
         closeSpellProbe(objects); // close even if autonomy toggled off or UI is up
         combat::cancel();
