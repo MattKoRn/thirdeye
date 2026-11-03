@@ -286,7 +286,7 @@ pattern.
 
 ## Neural in-game rolling saves and game-over recovery
 
-While **F1 neural AUTO** is enabled in **Eye of the Beholder 3**, the host
+When the explicitly requested **`nn auto on`** mode is enabled in **Eye of the Beholder 3**, the host
 calls the game's existing native `save_game(slot, level)` routine every
 60 seconds of monotonic elapsed time (rather than counting frames). Saves
 wait for the actual dungeon view, a valid current level, and at least one
@@ -315,13 +315,15 @@ implementation; the native EOB3 save/restore format must not be applied to
 by this first version. The three named saves are real **game-state** saves,
 separate from neural policy checkpoints in `Documents/ThirdeyeNN`.
 
-## Self-learning neural movement (F1)
+## Self-learning neural movement and F1 advice
 
 The neural controller does **not** learn from the player's movement keys or
-from `key` control commands. Press **F1** during gameplay to turn
-on autonomous exploration. F1 again returns movement control to the player.
-The title bar shows `[Neural AUTO - F1 to stop]` while active.
-Menus and other UI screens suspend autonomous movement.
+from `key` control commands. Press **F1** during gameplay to open a ranked
+advice menu instead of autonomous takeover: choose one of up to five actions
+to execute and learn from its measured outcome before the next batch appears.
+For fully automatic play, the separate control command `nn auto on` remains
+available; `nn auto off` returns control. Menus and other UI screens suspend
+autonomous movement.
 
 The controller is a lightweight online softmax policy with six actions:
 forward (4800), backward (5000), strafe left/right (4b00/4d00), and
@@ -408,11 +410,11 @@ After `nn auto on`, `nn spell probe <slot> mage|cleric` queues one native
 host pump it uses the same `magic.deactivate` M:172 verified by
 `THIRDEYE_SPELLMENU` in `runtime/event.cpp`, then reports the actual
 menu screen before/after, prepared copies and magic effects. It never sends
-menu coordinates, selection keys or M:54. F1 mode pauses its normal
+menu coordinates, selection keys or M:54. Explicit `nn auto on` mode pauses its normal
 movement/combat actions for the probe; closing is attempted even if the
 user disables autonomy or a menu is active. `nn status` includes
 `spell_probe=queued|open|menu-cycle-verified|menu-transition-unverified|failed`.
-While F1 autonomy is active, the controller also reports observed changes
+While explicit `nn auto on` autonomy is active, the controller also reports observed changes
 in real spell counters/effects as `[nn] spell-state`, clearly marked
 `attributed_cast=no trained=no`. This adds live discovery telemetry
 without pretending that a resource change proves an enemy weakness.
@@ -590,7 +592,7 @@ drinking, healing spells, food consumption or rest**. Those actions need
 verified native item-specific effects and use controls. Carried resource
 counts do not prove an item is an effective cure.
 
-**Autonomous EOB3 combat (first supported interaction).** When F1 autonomy
+**Autonomous EOB3 combat (first supported interaction).** When explicit `nn auto on` autonomy
 is active, a living enemy immediately ahead on the same floor triggers
 right-click weapon attacks through the existing event queue. The agent
 observes NPC HP from class 1622 and selects an alive party member (slots
