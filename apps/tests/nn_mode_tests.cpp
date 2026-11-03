@@ -4,7 +4,7 @@
 #include "../thirdeye/nn/survival_mode.hpp"
 #include "../thirdeye/nn/food_learning.hpp"
 #include "../thirdeye/nn/food_actuator.hpp"
-#include "../thirdeye/nn/human_mouse.hpp"
+#include "../thirdeye/nn/advice_menu.hpp"
 #include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
@@ -14,6 +14,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 namespace mode = THIRDEYE::nn::mode;
 
@@ -65,70 +66,84 @@ TEST(nnSpell, NativeProbeOnlyReportsVerifiedOpenAndClose) {
     EXPECT_FALSE(probe.shouldClose());
 }
 
-TEST(nnMouse, HumanLikeMotionRequiresValidTargetAndIsTimeBounded) {
-    namespace mouse = THIRDEYE::nn::mouse;
-    using Clock = mouse::HumanMouse::Clock;
-    const auto start = Clock::now();
-    mouse::HumanMouse pilot;
-    EXPECT_FALSE(pilot.start(0, 0, 320, 100, start));
-    EXPECT_FALSE(pilot.start(-1, 0, 200, 30, start));
-    ASSERT_TRUE(pilot.start(12, 14, 232, 175, start, 7));
-    EXPECT_TRUE(pilot.busy());
-    EXPECT_FALSE(pilot.start(12, 14, 100, 100, start));
-    int moves = 0;
-    int previousX = 12, previousY = 14;
-    int presses = 0, releases = 0;
-    for (int elapsed = 0; elapsed <= 1600; elapsed += 25) {
-        const auto step = pilot.advance(start + std::chrono::milliseconds(elapsed));
-        if (step.kind == mouse::HumanMouse::Kind::Move) {
-            EXPECT_TRUE(mouse::HumanMouse::onScreen(step.x, step.y));
-            previousX = step.x;
-            previousY = step.y;
-            ++moves;
-        } else if (step.kind == mouse::HumanMouse::Kind::Press) {
-            EXPECT_EQ(step.x, 232);
-            EXPECT_EQ(step.y, 175);
-            EXPECT_EQ(previousX, 232);
-            EXPECT_EQ(previousY, 175);
-            EXPECT_TRUE(pilot.buttonHeld());
-            ++presses;
-        } else if (step.kind == mouse::HumanMouse::Kind::Release) {
-            EXPECT_EQ(step.x, 232);
-            EXPECT_EQ(step.y, 175);
-            EXPECT_FALSE(pilot.buttonHeld());
-            ++releases;
-        }
+TEST(nnAdvice, GeneratesAtMostFiveLiveReachableActions) {
+    namespace advice = THIRDEYE::nn::advice;
+    THIRDEYE::nn::OnlinePolicy brain;
+    const auto features = THIRDEYE::nn::OnlinePolicy::features(
+        13, 9, 1, {false, false, false, false});
+    std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> allowed{};
+    allowed.fill(true); // six possible movements
+    std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> frontier{};
+    frontier[0] = true;
+    const auto batch = advice::generate(brain, features, allowed, frontier, 1);
+    ASSERT_EQ(batch.count, 5);
+    EXPECT_EQ(batch.learnedSamples, 0u);
+    EXPECT_EQ(batch.generation, 1u);
+    EXPECT_EQ(batch.suggestions[0].action, 0); // novel forward path
+    std::array<bool, THIRDEYE::nn::OnlinePolicy::kActions> seen{};
+    for (int i = 0; i < batch.count; ++i) {
+        const int action = batch.suggestions[static_cast<std::size_t>(i)].action;
+        ASSERT_GE(action, 0);
+        ASSERT_LT(action, 6);
+        EXPECT_FALSE(seen[static_cast<std::size_t>(action)]);
+        seen[static_cast<std::size_t>(action)] = true;
+        EXPECT_FALSE(batch.suggestions[static_cast<std::size_t>(i)].label.empty());
+        EXPECT_NE(THIRDEYE::nn::OnlinePolicy::keyForAction(action), -1);
     }
-    EXPECT_GE(moves, 8);
-    EXPECT_EQ(presses, 1);
-    EXPECT_EQ(releases, 1);
-    EXPECT_FALSE(pilot.busy());
-    EXPECT_EQ(pilot.advance(start + std::chrono::seconds(10)).kind,
-              mouse::HumanMouse::Kind::Idle);
+    EXPECT_EQ(advice::rowAt(35, advice::kRowY, batch.count), 0);
+    EXPECT_EQ(advice::rowAt(35, advice::kRowY + 4 * advice::kRowHeight,
+                            batch.count), 4);
+    EXPECT_EQ(advice::rowAt(35, advice::kRowY + 5 * advice::kRowHeight,
+                            batch.count), -1);
+    EXPECT_EQ(advice::rowAt(10, advice::kRowY, batch.count), -1);
+    EXPECT_EQ(advice::rowAt(35, advice::kRowY, 6), -1);
 }
 
-TEST(nnMouse, F1CancellationStopsMouseAndRequestsHeldRelease) {
-    namespace mouse = THIRDEYE::nn::mouse;
-    using Clock = mouse::HumanMouse::Clock;
-    const auto now = Clock::now();
-    mouse::HumanMouse pilot;
-    ASSERT_TRUE(pilot.start(8, 13, 100, 80, now, 3));
-    EXPECT_FALSE(pilot.cancel()); // no press yet
-    EXPECT_FALSE(pilot.busy());
-    ASSERT_TRUE(pilot.start(8, 13, 100, 80, now, 3));
-    bool pressed = false;
-    for (int i = 0; i < 50; ++i) {
-        const auto step = pilot.advance(now + std::chrono::milliseconds(i * 30));
-        if (step.kind == mouse::HumanMouse::Kind::Press) {
-            pressed = true;
-            break;
-        }
+TEST(nnAdvice, RetrainsAfterObservedMoveAndChangesNextRanking) {
+    namespace advice = THIRDEYE::nn::advice;
+    THIRDEYE::nn::OnlinePolicy brain;
+    const auto features = THIRDEYE::nn::OnlinePolicy::features(
+        2, 3, 0, {false, false, false, false});
+    const std::array<bool, 6> allowed{true, true, true, true, true, true};
+    const std::array<bool, 6> frontier{};
+    const auto before = advice::generate(brain, features, allowed, frontier, 1);
+    ASSERT_EQ(before.count, 5);
+    const mode::Pose origin{2, 3, 0, 0};
+    const mode::Pose turned{2, 3, 1, 0};
+    const mode::Outcome actual = mode::evaluateOutcome(origin, turned, 5, false);
+    ASSERT_TRUE(actual.success);
+    ASSERT_TRUE(brain.reinforce(features, 5, actual.reward, actual.success));
+    const auto regenerated = advice::generate(brain, features, allowed, frontier, 2);
+    EXPECT_EQ(regenerated.generation, 2u);
+    EXPECT_EQ(regenerated.learnedSamples, 1u);
+    ASSERT_EQ(regenerated.count, 5);
+    // More confirmed successful experience increases learned preference.
+    for (int i = 0; i < 90; ++i)
+        ASSERT_TRUE(brain.reinforce(features, 5, 1.0, true));
+    const auto learned = advice::generate(brain, features, allowed, frontier, 3);
+    ASSERT_EQ(learned.count, 5);
+    EXPECT_EQ(learned.learnedSamples, 91u);
+    EXPECT_EQ(learned.suggestions[0].action, 5);
+    EXPECT_GT(brain.meanReward(), 0.0);
+}
+
+TEST(nnAdvice, RejectsBlockedOrInvalidRecommendations) {
+    namespace advice = THIRDEYE::nn::advice;
+    THIRDEYE::nn::OnlinePolicy brain;
+    auto features = THIRDEYE::nn::OnlinePolicy::features(
+        20, 8, 2, {false, false, false, false});
+    const std::array<bool, 6> allowed{false, false, false, true, false, true};
+    const std::array<bool, 6> frontier{};
+    const auto small = advice::generate(brain, features, allowed, frontier, 4);
+    ASSERT_EQ(small.count, 2);
+    for (int i = 0; i < small.count; ++i) {
+        const int action = small.suggestions[static_cast<std::size_t>(i)].action;
+        EXPECT_TRUE(action == 3 || action == 5);
     }
-    ASSERT_TRUE(pressed);
-    EXPECT_TRUE(pilot.buttonHeld());
-    EXPECT_TRUE(pilot.cancel());  // host must issue mouseButton(false,false)
-    EXPECT_FALSE(pilot.busy());
-    EXPECT_FALSE(pilot.cancel()); // no duplicate release
+    const std::array<bool, 6> none{};
+    EXPECT_EQ(advice::generate(brain, features, none, frontier, 5).count, 0);
+    features[0] = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(advice::generate(brain, features, allowed, frontier, 6).count, 0);
 }
 
 TEST(nnFood, NativeClickCalibrationRejectsAmbiguousOrUnrelatedTargets) {
