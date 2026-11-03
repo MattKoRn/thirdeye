@@ -52,6 +52,16 @@ struct State {
     bool foodActuatorWarned = false;
     mouse::HumanMouse humanMouse;
     std::optional<food::CalibratedClick> mouseTarget;
+    struct UiNavigation {
+        VM::EventSystem::LeftClick target;
+        int pc = -1;
+        int heldItem = -1;
+        bool clicked = false;
+        mouse::HumanMouse::Clock::time_point start{};
+    };
+    std::optional<UiNavigation> uiNavigation;
+    int failedUiOpenItem = -1;
+    uint64_t mouseScreens = 0;
     bool mouseReleasePending = false;
     uint64_t mouseMoves = 0;
     uint64_t mouseClicks = 0;
@@ -528,6 +538,7 @@ void abortMouse(bool count) {
         if (count) ++g.mouseAborts;
     }
     g.mouseTarget.reset();
+    g.uiNavigation.reset();
 }
 
 bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
@@ -540,7 +551,7 @@ bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
     const auto *target = g.mouseTarget ? &*g.mouseTarget : nullptr;
     const int cursor = readWord(objects, objects.firstObjectOfClass(kKernelClass),
                                 kKernelClass, 241);
-    const bool safe = g.autonomous && eob3 && g.foodTrial &&
+    const bool foodSafe = g.autonomous && eob3 && g.foodTrial &&
         g.foodTrial->automatic && target && target->valid() &&
         target->slot == g.foodTrial->slot &&
         target->click.handlerObject == g.foodTrial->before.pc &&
@@ -548,7 +559,12 @@ bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
         spellScreen(objects) == target->screen &&
         runtime::uiScreenActive(objects) &&
         events.matchesLeftClickTarget(target->click);
-    if (!safe) {
+    const bool navigateSafe = g.autonomous && eob3 && g.uiNavigation &&
+        !runtime::uiScreenActive(objects) &&
+        cursor == g.uiNavigation->heldItem &&
+        objects.classOf(g.uiNavigation->pc) != 0xffff &&
+        events.matchesLeftClickTarget(g.uiNavigation->target);
+    if (!foodSafe && !navigateSafe) {
         const int attemptedScreen = target ? target->screen : -1;
         const bool alreadyConsumed = g.foodTrial == std::nullopt &&
                                      g.humanMouse.buttonHeld();
@@ -564,6 +580,8 @@ bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
             g.foodTrial.reset();
             g.foodStatus = "mouse-target-changed";
         }
+        if (g.uiNavigation && !g.uiNavigation->clicked)
+            g.failedUiOpenItem = g.uiNavigation->heldItem;
         if (!alreadyConsumed)
             std::cout << "[nn] mouse aborted: live UI target changed"
                       << " aborts=" << g.mouseAborts << '\n';
@@ -579,8 +597,10 @@ bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
         events.mouseMove(step.x, step.y);
         events.mouseButton(true, false);
         ++g.mouseClicks;
-        std::cout << "[nn] mouse native click target=food slot="
-                  << target->slot << " x=" << step.x << " y=" << step.y
+        if (g.uiNavigation) g.uiNavigation->clicked = true;
+        std::cout << "[nn] mouse native click target="
+                  << (g.uiNavigation ? "equipment-portrait" : "food")
+                  << " x=" << step.x << " y=" << step.y
                   << " steps=" << g.mouseMoves << '\n';
         break;
     case mouse::HumanMouse::Kind::Release:
@@ -746,6 +766,7 @@ bool acceptsCalibrationMouse() {
 uint64_t mouseMoves() { return g.mouseMoves; }
 uint64_t mouseClicks() { return g.mouseClicks; }
 uint64_t mouseAborts() { return g.mouseAborts; }
+uint64_t mouseScreens() { return g.mouseScreens; }
 const char *mouseState() {
     return g.humanMouse.busy() ? "moving-or-clicking" : "idle";
 }
