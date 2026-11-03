@@ -163,7 +163,7 @@ std::string handle(const std::vector<std::string> &tok,
     // The same brain is shared with F1 gameplay mode on every platform.
     if (verb == "nn") {
         if (tok.size() < 2)
-            return "err nn <status|teach|train|predict|step|auto|save|load|spell>\n";
+            return "err nn <status|teach|train|predict|step|auto|save|load|spell|food>\n";
         const std::string &sub = tok[1];
         if (sub == "status" && tok.size() == 2)
             return "nn samples=" + std::to_string(nn::mode::samples()) +
@@ -179,6 +179,10 @@ std::string handle(const std::vector<std::string> &tok,
                    " survival_reward=" + std::to_string(nn::mode::survivalMeanReward()) +
                    " survival_success=" + std::to_string(nn::mode::survivalSuccessRate()) +
                    " survival_checkpoint=" + nn::mode::survivalCheckpointStatus() +
+                   " food_samples=" + std::to_string(nn::mode::foodSamples()) +
+                   " food_reward=" + std::to_string(nn::mode::foodMeanReward()) +
+                   " food_checkpoint=" + nn::mode::foodCheckpointStatus() +
+                   " food_probe=" + nn::mode::foodProbeStatus() +
                    " tactic_samples=" + std::to_string(nn::mode::tacticalSamples()) +
                    " enemy_tactics=" + std::to_string(nn::mode::knownWeaknesses()) +
                    " tactic_checkpoint=" + nn::mode::tacticalCheckpointStatus() +
@@ -189,6 +193,28 @@ std::string handle(const std::vector<std::string> &tok,
             (tok[2] == "on" || tok[2] == "off")) {
             nn::mode::setTraining(tok[2] == "on");
             return "ok\n";
+        }
+        if (sub == "food") {
+            if (tok.size() == 4 &&
+                (tok[2] == "probe" || tok[2] == "recommend")) {
+                int slot = -1;
+                if (!parseInt(tok[3], slot) || slot < 0 || slot >= 6)
+                    return "err nn food <probe|recommend> <party-slot-0..5>\n";
+                if (tok[2] == "recommend")
+                    return nn::mode::foodRecommendation(objects, slot);
+                std::string error;
+                if (!nn::mode::queueFoodProbe(objects, slot, error))
+                    return "err " + error + "\n";
+                return "nn food probe armed: click the native food plate"
+                       " with the held food item; check nn status\nok\n";
+            }
+            if (tok.size() == 3 && tok[2] == "status")
+                return "nn food probe=" +
+                       std::string(nn::mode::foodProbeStatus()) +
+                       " samples=" + std::to_string(nn::mode::foodSamples()) +
+                       " checkpoint=" + nn::mode::foodCheckpointStatus() +
+                       "\nok\n";
+            return "err nn food <probe slot|recommend slot|status>\n";
         }
         if (sub == "spell") {
             if (tok.size() == 4 && tok[2] == "status") {
@@ -241,7 +267,7 @@ std::string handle(const std::vector<std::string> &tok,
             return "nn checkpoint loaded samples=" +
                    std::to_string(nn::mode::samples()) + "\nok\n";
         }
-        return "err nn <status|teach|train|predict|step|auto|save|load|spell>\n";
+        return "err nn <status|teach|train|predict|step|auto|save|load|spell|food>\n";
     }
 
     if (verb == "ping") return "ok\n";
