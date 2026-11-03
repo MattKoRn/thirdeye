@@ -143,6 +143,12 @@ double meanLoss();
 double meanReward();
 double successRate();
 double learningRate();
+// Separate resource-aware survival learner, persisted as survival.ckpt.
+// Retains existing movement/combat/weakness and native game save formats.
+uint64_t survivalSamples();
+double survivalMeanReward();
+double survivalSuccessRate();
+const char *survivalCheckpointStatus();
 const char *checkpointStatus();
 uint64_t combatSamples();
 double combatMeanReward();
