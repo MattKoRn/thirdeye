@@ -1,6 +1,8 @@
 #include "online_mode.hpp"
 #include "combat_mode.hpp"
 #include "food_learning.hpp"
+#include "food_actuator.hpp"
+#include "../runtime/internal.hpp"
 #include "online_policy.hpp"
 #include "spell_probe.hpp"
 #include "survival_mode.hpp"
@@ -39,6 +41,13 @@ struct State {
     OnlinePolicy brain;
     OnlinePolicy survivalBrain;
     OnlinePolicy foodBrain;
+    food::ActuatorMemory foodActuator;
+    std::filesystem::path foodActuatorFile;
+    bool foodActuatorReady = false;
+    bool foodActuatorDirty = false;
+    bool foodActuatorPresent = false;
+    bool foodActuatorWarned = false;
+    bool foodClickDown = false;
     std::filesystem::path foodFile;
     bool foodStorageReady = false;
     bool foodDirty = false;
@@ -79,6 +88,10 @@ struct State {
         OnlinePolicy::Features features{};
         int slot = -1;
         ActionPacer::Clock::time_point started{};
+        uint64_t firstClickSerial = 0;
+        VM::EventSystem::LeftClick click;
+        int clickedScreen = -1;
+        bool automatic = false;
     };
     std::optional<FoodTrial> foodTrial;
     const char *foodStatus = "idle";
@@ -348,6 +361,23 @@ void autoSaveFood(bool force) {
     }
 }
 
+
+void autoSaveFoodActuator(bool force) {
+    if (!g.foodActuatorReady || !g.foodActuatorDirty || !force)
+        return;
+    std::string error;
+    if (g.foodActuator.save(g.foodActuatorFile, error)) {
+        g.foodActuatorDirty = false;
+        g.foodActuatorPresent = true;
+        std::cout << "[nn] calibrated food regions saved count="
+                  << g.foodActuator.size()
+                  << " path=" << g.foodActuatorFile.string() << '\n';
+    } else if (!g.foodActuatorWarned) {
+        std::cerr << "[nn] food actuator checkpoint error: " << error << '\n';
+        g.foodActuatorWarned = true;
+    }
+}
+
 food::Observation foodSnapshot(VM::ObjectSystem &objects, int slot) {
     food::Observation o;
     const int kernel = objects.firstObjectOfClass(kKernelClass);
@@ -367,14 +397,62 @@ food::Observation foodSnapshot(VM::ObjectSystem &objects, int slot) {
     return o;
 }
 
-void observeFoodTrial(VM::ObjectSystem &objects) {
+void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
     if (!g.foodTrial) return;
-    const auto pending = *g.foodTrial;
+    auto &trial = *g.foodTrial;
+    const auto observed = events.lastLeftClick();
+    if (observed.serial != trial.firstClickSerial && trial.click.serial == 0) {
+        // Only a single real left-click may be credited. Capture the target
+        // while its native window still exists; unrelated clicks disqualify.
+        if (observed.serial == trial.firstClickSerial + 1 &&
+            observed.valid() && runtime::uiScreenActive(objects)) {
+            trial.click = observed;
+            trial.clickedScreen = spellScreen(objects);
+            std::cout << "[nn] food clicked native_region="
+                      << observed.handle << " handler_class="
+                      << observed.handlerClass << " handler_obj="
+                      << observed.handlerObject << " message="
+                      << observed.message << " rect=(" << observed.x0 << ','
+                      << observed.y0 << ',' << observed.x1 << ','
+                      << observed.y1 << ") screen=" << trial.clickedScreen
+                      << '\n';
+        } else {
+            g.foodTrial.reset();
+            g.foodStatus = "unverified";
+            std::cout << "[nn] food trial rejected reason=ambiguous-or-unregistered-click learned=no\n";
+            return;
+        }
+    }
+    if (trial.click.serial &&
+        observed.serial != trial.click.serial) {
+        g.foodTrial.reset();
+        g.foodStatus = "unverified";
+        std::cout << "[nn] food trial rejected reason=multiple-clicks learned=no\n";
+        return;
+    }
+    const auto pending = trial;
     const auto after = foodSnapshot(objects, pending.slot);
     // Since the cursor item may disappear on success, retain the original
     // item/class identity; it is the cursor transition that proves consumption.
     const auto outcome = food::evaluate(pending.before, after);
-    if (outcome) {
+    if (outcome && pending.click.serial != 0) {
+        // The observed item disappearance and food rise *corroborate* the
+        // captured native click, but only a direct PC listener is replayable.
+        food::CalibratedClick profile;
+        profile.slot = pending.slot;
+        profile.itemClass = pending.before.itemClass;
+        profile.screen = pending.clickedScreen;
+        profile.click = pending.click;
+        const bool directPcListener =
+            profile.click.handlerObject == pending.before.pc &&
+            profile.click.handlerClass == kPcClass;
+        const bool learnedRegion =
+            !pending.automatic && directPcListener &&
+            g.foodActuatorReady && g.foodActuator.remember(profile);
+        if (learnedRegion) {
+            g.foodActuatorDirty = true;
+            autoSaveFoodActuator(true);
+        }
         g.foodTrial.reset();
         g.foodStatus = "verified";
         const int action =
@@ -387,6 +465,9 @@ void observeFoodTrial(VM::ObjectSystem &objects) {
         std::cout << "[nn] native food verified"
                   << " item_class=" << pending.before.itemClass
                   << " slot=" << pending.slot
+                  << " actuator=" << (learnedRegion ? "calibrated" :
+                                      (pending.automatic ? "replayed" : "unverified-listener"))
+                  << " regions=" << g.foodActuator.size()
                   << " food_gain=" << outcome->foodGain
                   << " hp_delta=" << outcome->hpGain
                   << " reward=" << outcome->reward
@@ -513,6 +594,27 @@ void initialize() {
         std::cerr << "[nn] food checkpoint unavailable: "
                   << foodError.message() << '\n';
     }
+    // Verified-only UI actuator profile has its own stricter v1 checkpoint.
+    g.foodActuatorFile = folder / "food_actuator.ckpt";
+    g.foodActuatorReady = true;
+    std::error_code actuatorError;
+    if (std::filesystem::exists(g.foodActuatorFile, actuatorError) &&
+        !actuatorError) {
+        std::string error;
+        if (g.foodActuator.load(g.foodActuatorFile, error)) {
+            g.foodActuatorPresent = true;
+            std::cout << "[nn] food regions restored count="
+                      << g.foodActuator.size() << '\n';
+        } else {
+            g.foodActuatorReady = false; // never overwrite corrupted memory
+            std::cerr << "[nn] food actuator checkpoint rejected: "
+                      << error << '\n';
+        }
+    } else if (actuatorError) {
+        g.foodActuatorReady = false;
+        std::cerr << "[nn] actuator checkpoint unavailable: "
+                  << actuatorError.message() << '\n';
+    }
     // Independent v2 sidecar; legacy movement checkpoints remain unchanged.
     combat::initialize(folder / "combat.ckpt");
 }
@@ -522,6 +624,7 @@ void flushLearning() {
     autoSave(true);
     autoSaveSurvival(true);
     autoSaveFood(true);
+    autoSaveFoodActuator(true);
     combat::flushLearning();
 }
 
@@ -616,8 +719,8 @@ bool training() { return g.trainingEnabled; }
 uint64_t samples() { initialize(); return g.brain.samples(); }
 double meanLoss() { initialize(); return g.brain.meanLoss(); }
 
-bool queueFoodProbe(VM::ObjectSystem &objects, int slot,
-                    std::string &error) {
+bool queueFoodProbe(VM::ObjectSystem &objects, VM::EventSystem &events,
+                    int slot, std::string &error) {
     initialize();
     error.clear();
     if (!g.autonomous || !g.trainingEnabled) {
@@ -625,6 +728,10 @@ bool queueFoodProbe(VM::ObjectSystem &objects, int slot,
         return false;
     }
     if (g.foodTrial) { error = "native food probe already running"; return false; }
+    if (!runtime::uiScreenActive(objects)) {
+        error = "open the target PC's native equipment/food screen first";
+        return false;
+    }
     if (g.spellProbe.busy()) { error = "finish spell probe first"; return false; }
     if (objects.firstObjectOfClass(kMagicClass) < 0) {
         error = "native EOB3 game required"; return false;
@@ -655,7 +762,7 @@ bool queueFoodProbe(VM::ObjectSystem &objects, int slot,
         {false, false, false, false});
     g.foodTrial = State::FoodTrial{
         before, food::features(base, party, slot), slot,
-        ActionPacer::Clock::now()
+        ActionPacer::Clock::now(), events.lastLeftClick().serial
     };
     g.foodStatus = "armed";
     std::cout << "[nn] native food trial armed slot=" << slot
@@ -706,6 +813,41 @@ std::string foodRecommendation(VM::ObjectSystem &objects, int slot) {
            " action=diagnostic-only-no-automatic-item-use\nok\n";
 }
 
+bool useCalibratedFood(VM::ObjectSystem &objects, VM::EventSystem &events,
+                       int slot, std::string &error) {
+    error.clear();
+    if (!g.foodActuatorReady || g.foodActuator.size() == 0) {
+        error = "no verified native food click calibration loaded";
+        return false;
+    }
+    if (!runtime::uiScreenActive(objects)) {
+        error = "open the intended PC's native equipment screen";
+        return false;
+    }
+    const auto before = foodSnapshot(objects, slot);
+    const auto *profile = g.foodActuator.find(
+        slot, before.itemClass, spellScreen(objects));
+    if (!profile || profile->click.handlerObject != before.pc ||
+        profile->click.handlerClass != kPcClass ||
+        !events.matchesLeftClickTarget(profile->click)) {
+        error = "live food region/target PC does not match verified calibration";
+        return false;
+    }
+    if (!queueFoodProbe(objects, events, slot, error)) return false;
+    g.foodTrial->automatic = true;
+    g.foodStatus = "executing";
+    events.mouseMove(profile->click.x, profile->click.y);
+    events.mouseButton(true, false); // exact native region; no direct SOP send
+    g.foodClickDown = true;         // release on next host pump
+    std::cout << "[nn] automated native food region click"
+              << " slot=" << slot << " class=" << before.itemClass
+              << " target=" << before.pc
+              << " pos=(" << profile->click.x << ',' << profile->click.y << ")"
+              << " outcome=pending\n";
+    return true;
+}
+
+std::size_t foodCalibrations() { initialize(); return g.foodActuator.size(); }
 const char *foodProbeStatus() { return g.foodStatus; }
 uint64_t foodSamples() { initialize(); return g.foodBrain.samples(); }
 double foodMeanReward() { initialize(); return g.foodBrain.meanReward(); }
@@ -764,9 +906,13 @@ bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
 void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
           bool uiActive, bool eob3) {
     combat::release(events); // always release pending click on next host pump
+    if (g.foodClickDown) {
+        events.mouseButton(false, false);
+        g.foodClickDown = false;
+    }
     // Native feeding is confirmed by the SOP after the player/control socket
     // operates its already-verified food plate. Observe even in equipment UI.
-    observeFoodTrial(objects);
+    observeFoodTrial(objects, events);
     if (g.foodTrial) {
         // Preserve the food plate/UI sequence; no parallel autonomous keys
         // or combat clicks while awaiting real native consumption evidence.
