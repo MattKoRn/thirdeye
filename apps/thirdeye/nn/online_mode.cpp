@@ -688,9 +688,8 @@ void initialize() {
     // Both games use exactly the same model/reward interface, but keep
     // their policy weights in separate v2 checkpoint files. No migration or
     // overwrite of existing EOB3 brain.ckpt is required.
-    const auto file = runtime::gDungeonHack
-        ? documents / "ThirdeyeNN" / "brain-dungeon-hack.ckpt"
-        : brainFileForDocuments(documents);
+    const auto file = brainFileForDocuments(documents,
+                                           runtime::gDungeonHack);
     const auto folder = file.parent_path();
     std::error_code ec;
     std::filesystem::create_directories(folder, ec);
