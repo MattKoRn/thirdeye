@@ -154,7 +154,7 @@ private:
 class AutoChoicePacer {
 public:
     using Clock = std::chrono::steady_clock;
-    static constexpr auto kInterval = std::chrono::seconds(2);
+    static constexpr auto kInterval = std::chrono::seconds(1);
     void reset(Clock::time_point now) { next_ = now + kInterval; }
     bool ready(Clock::time_point now) {
         if (now < next_) return false;
