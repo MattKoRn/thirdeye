@@ -849,6 +849,32 @@ catalog is the biggest single chunk):
 several *runtime functions* have only guessed semantics (especially DH-only ones) — these
 need verification against the original `AESOP.EXE`/`INTERP.EXE` behaviour or the docs.
 
+## F1 auto-select and Dungeon Hack desktop boot (2026-11-03)
+
+- **F1 toggles autonomous advice ON/OFF without opening an overlay.** Every
+  two elapsed seconds while an observable gameplay map is active, the shared
+  neural policy ranks up to five safe coordinate/facing objectives, selects
+  the best candidate, emits exactly one native movement/turn key, waits until
+  the real VM consumes it, and verifies the new party pose. Only confirmed
+  success or blocking changes the model and shared checkpoint; timed-out or
+  unexpected results do not train. Pending actions prevent overlapping keys,
+  and delayed frames do not replay missed intervals. Each attempted objective
+  and observed learning result is reported once to the console.
+- F1 again stops auto-selection immediately (any already-executing action
+  still receives outcome verification). Manual choice-by-row advice remains
+  accessible via the control channel; it suspends auto-selection. No mouse
+  takeover, hidden modal F1 panel, or game-timer pause in auto mode.
+- The ordinary Dungeon Hack launcher previously required an EOB3
+  `INTRO.GFF` check and then fell into the diagnostic `runResourceVM`
+  dump, or attempted to boot the EOB3 `start` class. Startup now identifies
+  `HACK.RES` before initializing the VM and enters its `phase-one`
+  native game loop; direct `OPEN.RES` launches `opening`. `EYE.RES`
+  continues to boot `start`. The original quiet VM trace defaults remain.
+- New pure tests cover two-second choice pacing, no catch-up action bursts,
+  objective-based reinforcement, and the two games' distinct boot names.
+  Full game-asset smoke tests and Windows rendering verification still
+  require running the rebuilt executable with legally owned installs.
+
 ## Objective-only F1 advice (2026-11-03)
 
 - F1 displays at most five real, actionable objectives: move to a specific adjacent
