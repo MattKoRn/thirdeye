@@ -887,7 +887,9 @@ bool toggleAdviceMenu(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
         g.adviceReopen = false;
         return false;
     }
-    // F1 is now a user-invoked advice menu, NOT autonomous takeover.
+    // Explicit manual advice (e.g. the control socket) overrides F1 auto.
+    // Never let the two planners queue native movement keys together.
+    if (g.autoAdvice) setAutoAdvice(false);
     if (g.autonomous) setActive(false);
     if (regenerateAdvice(objects, eob3, uiActive)) return true;
     // Dungeon Hack's first native draw_walls snapshot may not have arrived
