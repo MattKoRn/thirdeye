@@ -129,6 +129,31 @@ public:
 	// narrow window 99 to a 13-pixel column for the slot numbers ("1".."12")
 	// then widen it back to 175 for the slot names ("Quick Start Party").
 	void setWindowEdge(int32_t handle, char which, int32_t val);
+	// Immutable evidence about a real left-click against a live SOP region
+	// listener. Region handles may be recycled, so replay must re-match the
+	// listener's class, message AND rectangle instead of its handle alone.
+	struct LeftClick {
+		uint64_t serial = 0;
+		int32_t x = -1, y = -1;
+		int32_t x0 = -1, y0 = -1, x1 = -1, y1 = -1;
+		int32_t handlerClass = -1, message = -1;
+		int32_t eventType = -1;
+		int32_t handle = -1;
+		bool valid() const {
+			return x >= 0 && x <= 319 && y >= 0 && y <= 199 &&
+			       x0 >= 0 && y0 >= 0 && x1 < 320 && y1 < 200 &&
+			       x0 <= x && x <= x1 && y0 <= y && y <= y1 &&
+			       handle >= 2 && handlerClass >= 0 && message >= 0 &&
+			       (eventType == SYS_LEFT_CLICK_REGION ||
+			        eventType == SYS_CLICK_REGION);
+		}
+	};
+	LeftClick lastLeftClick() const { return mLastLeftClick; }
+	// Find a unique smallest active region receiving a left click at this
+	// position. Tied regions/unknown handlers are intentionally rejected.
+	LeftClick inspectLeftClickTarget(int32_t x, int32_t y) const;
+	bool matchesLeftClickTarget(const LeftClick &recorded) const;
+
 	// Feed host input. mouseMove posts SYS_MOUSEMOVE (coalesced) and the
 	// ENTER/LEAVE region events; mouseButton posts CLICK/RELEASE plus the
 	// *_CLICK_REGION events for whichever registered region holds the mouse.
@@ -237,6 +262,8 @@ private:
 	std::array<Win, MAX_WINDOWS> mWindows{}; // window-handle table (0/1 = pages)
 	int32_t mPointX = 0, mPointY = 0;        // current mouse position (screen)
 	bool mLastLeft = false, mLastRight = false; // last button state (edge detect)
+	uint64_t mLeftClickSerial = 0;
+	LeftClick mLastLeftClick{};
 
 	int32_t mCurrentEventType = SYS_FREE; // event being dispatched (cancel guard)
 	int32_t mLastTimerBeat = INT32_MIN;   // last heartbeat we posted a timer for
