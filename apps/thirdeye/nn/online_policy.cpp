@@ -124,6 +124,34 @@ bool OnlinePolicy::reinforce(const Features &features, int action,
     return true;
 }
 
+bool OnlinePolicy::mergeFrom(const OnlinePolicy &other) {
+    if (&other == this || other.samples_ == 0) return true;
+    if (samples_ == 0) {
+        *this = other;
+        return true;
+    }
+    if (other.samples_ > std::numeric_limits<uint64_t>::max() - samples_)
+        return false;
+
+    const uint64_t combinedSamples = samples_ + other.samples_;
+    // Ratios are calculated before modifying any state. The resulting
+    // weighted model remains a valid version-2 checkpoint.
+    const long double left = static_cast<long double>(samples_) /
+                             static_cast<long double>(combinedSamples);
+    const long double right = 1.0L - left;
+    for (std::size_t i = 0; i < weights_.size(); ++i)
+        weights_[i] = static_cast<double>(
+            left * weights_[i] + right * other.weights_[i]);
+    meanLoss_ = static_cast<double>(
+        left * meanLoss_ + right * other.meanLoss_);
+    meanReward_ = static_cast<double>(
+        left * meanReward_ + right * other.meanReward_);
+    samples_ = combinedSamples;
+    successes_ += other.successes_;
+    failures_ += other.failures_;
+    return true;
+}
+
 double OnlinePolicy::learn(const Features &features, int action) {
     if (action < 0 || action >= static_cast<int>(kActions) ||
         !validFeatures(features) || samples_ == std::numeric_limits<uint64_t>::max())
