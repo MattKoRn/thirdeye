@@ -1,6 +1,7 @@
 #include "gtest/gtest.h"
 #include "../thirdeye/nn/online_mode.hpp"
 #include "../thirdeye/nn/spell_probe.hpp"
+#include "../thirdeye/nn/survival_mode.hpp"
 #include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
 
@@ -58,6 +59,126 @@ TEST(nnSpell, NativeProbeOnlyReportsVerifiedOpenAndClose) {
     probe.fail();
     EXPECT_EQ(probe.stage(), Probe::Stage::Failed);
     EXPECT_FALSE(probe.shouldClose());
+}
+
+TEST(nnSurvival, RetreatsOnlyWithCriticalHPAndVerifiedEscape) {
+    namespace v = THIRDEYE::nn::survival;
+    v::Party party;
+    party.complete = true;
+    party.ids[0] = 50;
+    party.ids[1] = 51;
+    party.hp[0] = 8;
+    party.maximum[0] = 20;
+    party.hp[1] = 20;
+    party.maximum[1] = 20;
+    party.food[0] = party.food[1] = 60;
+
+    EXPECT_TRUE(v::valid(party));
+    EXPECT_DOUBLE_EQ(v::weakestHealth(party), 0.4);
+    const std::array<bool, 4> passable{false, false, true, false};
+    const auto allowed = v::exits(passable);
+    EXPECT_FALSE(allowed[0]);   // forward toward an enemy is prohibited
+    EXPECT_FALSE(allowed[1]);   // rear wall
+    EXPECT_TRUE(allowed[2]);    // left strafe
+    EXPECT_TRUE(allowed[3]);    // right strafe
+    EXPECT_FALSE(allowed[4]);
+    EXPECT_FALSE(allowed[5]);
+    EXPECT_TRUE(v::shouldWithdraw(party, true, passable));
+    EXPECT_FALSE(v::shouldWithdraw(party, false, passable));
+    EXPECT_FALSE(v::shouldWithdraw(party, true, {true, true, true, true}));
+
+    party.hp[0] = 12; // 60% HP; only retreats early if no resources carried
+    party.rations = 1;
+    EXPECT_FALSE(v::shouldWithdraw(party, true, passable));
+    party.rations = 0;
+    EXPECT_TRUE(v::shouldWithdraw(party, true, passable));
+    party.hp[0] = 0;
+    party.hp[1] = 0;
+    EXPECT_FALSE(v::shouldWithdraw(party, true, passable));
+}
+
+TEST(nnSurvival, RewardsObservedEscapeAndPenalizesInjuryAndFoodCost) {
+    namespace v = THIRDEYE::nn::survival;
+    v::Party before;
+    before.complete = true;
+    before.ids[0] = 101;
+    before.hp[0] = 6;
+    before.maximum[0] = 20;
+    before.food[0] = 90;
+    before.rations = 1;
+    before.potions = 2;
+
+    auto after = before;
+    auto safe = v::evaluate(before, after, true, false);
+    ASSERT_TRUE(safe);
+    EXPECT_TRUE(safe->success);
+    EXPECT_NEAR(safe->reward, 1.0, 0.000001);
+    EXPECT_EQ(safe->hpDelta, 0);
+    EXPECT_EQ(safe->foodDelta, 0);
+
+    after.hp[0] = 3;
+    after.food[0] = 65;
+    const auto injured = v::evaluate(before, after, true, false);
+    ASSERT_TRUE(injured);
+    EXPECT_FALSE(injured->success);
+    EXPECT_LT(injured->reward, safe->reward);
+    EXPECT_EQ(injured->hpDelta, -3);
+    EXPECT_EQ(injured->foodDelta, -25);
+
+    const auto failed = v::evaluate(before, before, false, true);
+    ASSERT_TRUE(failed);
+    EXPECT_FALSE(failed->success);
+    EXPECT_LT(failed->reward, 0.0);
+
+    after = before;
+    after.ids[0] = 102; // new party after load/teleport: no stale reward
+    EXPECT_FALSE(v::evaluate(before, after, true, false));
+    after = before;
+    after.maximum[0] = 19;
+    EXPECT_FALSE(v::evaluate(before, after, true, false));
+    before.complete = false;
+    EXPECT_FALSE(v::evaluate(before, after, true, false));
+}
+
+TEST(nnSurvival, ContextAndCheckpointRetainLearnedEscapePreference) {
+    namespace v = THIRDEYE::nn::survival;
+    v::Party party;
+    party.complete = true;
+    party.ids[0] = 102;
+    party.hp[0] = 7;
+    party.maximum[0] = 20;
+    party.food[0] = 45;
+    party.potions = 2;
+    const auto dungeon = THIRDEYE::nn::OnlinePolicy::features(
+        12, 5, 0, {false, false, false, false});
+    const auto learned = v::features(dungeon, party);
+    EXPECT_NEAR(learned[7], 0.35, 0.000001);
+    EXPECT_NEAR(learned[8], 0.45, 0.000001);
+    EXPECT_DOUBLE_EQ(learned[9], 1.0);
+    EXPECT_DOUBLE_EQ(learned[10], 0.0);
+
+    THIRDEYE::nn::OnlinePolicy survivalPolicy;
+    const auto allowed = v::exits({false, false, false, false});
+    for (int i = 0; i < 180; ++i)
+        ASSERT_TRUE(survivalPolicy.reinforce(learned, 3, 1.0, true));
+    EXPECT_EQ(survivalPolicy.select(learned, allowed, 1.0, 0.5), 3);
+
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("thirdeye_survival_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "survival.ckpt";
+    std::string error;
+    ASSERT_TRUE(survivalPolicy.save(file, error)) << error;
+    THIRDEYE::nn::OnlinePolicy loaded;
+    ASSERT_TRUE(loaded.load(file, error)) << error;
+    EXPECT_EQ(loaded.samples(), 180u);
+    EXPECT_EQ(loaded.weights(), survivalPolicy.weights());
+    EXPECT_EQ(loaded.select(learned, allowed, 1.0, 0.5), 3);
+    EXPECT_EQ(loaded.successes(), survivalPolicy.successes());
+    EXPECT_DOUBLE_EQ(loaded.meanReward(), survivalPolicy.meanReward());
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
 }
 
 TEST(nnMode, BrainLivesDirectlyInsideDocumentsThirdeyeNN) {
