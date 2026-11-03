@@ -175,6 +175,10 @@ std::string handle(const std::vector<std::string> &tok,
                    " combat_reward=" + std::to_string(nn::mode::combatMeanReward()) +
                    " combat_success=" + std::to_string(nn::mode::combatSuccessRate()) +
                    " combat_checkpoint=" + nn::mode::combatCheckpointStatus() +
+                   " survival_samples=" + std::to_string(nn::mode::survivalSamples()) +
+                   " survival_reward=" + std::to_string(nn::mode::survivalMeanReward()) +
+                   " survival_success=" + std::to_string(nn::mode::survivalSuccessRate()) +
+                   " survival_checkpoint=" + nn::mode::survivalCheckpointStatus() +
                    " tactic_samples=" + std::to_string(nn::mode::tacticalSamples()) +
                    " enemy_tactics=" + std::to_string(nn::mode::knownWeaknesses()) +
                    " tactic_checkpoint=" + nn::mode::tacticalCheckpointStatus() +
