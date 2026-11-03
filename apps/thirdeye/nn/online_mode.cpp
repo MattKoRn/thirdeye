@@ -2,7 +2,7 @@
 #include "combat_mode.hpp"
 #include "food_learning.hpp"
 #include "food_actuator.hpp"
-#include "human_mouse.hpp"
+#include "advice_menu.hpp"
 #include "../runtime/internal.hpp"
 #include "online_policy.hpp"
 #include "spell_probe.hpp"
@@ -50,23 +50,6 @@ struct State {
     bool foodActuatorDirty = false;
     bool foodActuatorPresent = false;
     bool foodActuatorWarned = false;
-    mouse::HumanMouse humanMouse;
-    std::optional<food::CalibratedClick> mouseTarget;
-    struct UiNavigation {
-        VM::EventSystem::LeftClick target;
-        int pc = -1;
-        int heldItem = -1;
-        bool clicked = false;
-        mouse::HumanMouse::Clock::time_point start{};
-    };
-    std::optional<UiNavigation> uiNavigation;
-    int failedUiOpenItem = -1;
-    uint64_t mouseScreens = 0;
-    bool mouseReleasePending = false;
-    uint64_t mouseMoves = 0;
-    uint64_t mouseClicks = 0;
-    uint64_t mouseAborts = 0;
-    bool mouseAutoFood = true;
     std::filesystem::path foodFile;
     bool foodStorageReady = false;
     bool foodDirty = false;
@@ -113,6 +96,18 @@ struct State {
         bool automatic = false;
     };
     std::optional<FoodTrial> foodTrial;
+    bool foodClickDown = false;
+    advice::Batch adviceBatch;
+    bool adviceOpen = false;
+    bool adviceReopen = false;
+    uint64_t adviceGeneration = 0;
+    struct AdvicePending {
+        OnlinePolicy::Features features{};
+        Pose before{};
+        int action = -1;
+        ActionPacer::Clock::time_point sent{};
+    };
+    std::optional<AdvicePending> advicePending;
     const char *foodStatus = "idle";
     std::optional<Pose> failurePose;
     std::array<bool, OnlinePolicy::kActions> failedActions{};
@@ -532,143 +527,6 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
 }
 
 
-void abortMouse(bool count) {
-    if (g.humanMouse.busy()) {
-        g.mouseReleasePending |= g.humanMouse.cancel();
-        if (count) ++g.mouseAborts;
-    }
-    g.mouseTarget.reset();
-    g.uiNavigation.reset();
-}
-
-bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
-                    bool eob3) {
-    if (g.mouseReleasePending) {
-        events.mouseButton(false, false);
-        g.mouseReleasePending = false;
-    }
-    if (!g.humanMouse.busy()) return false;
-    const auto *target = g.mouseTarget ? &*g.mouseTarget : nullptr;
-    const int cursor = readWord(objects, objects.firstObjectOfClass(kKernelClass),
-                                kKernelClass, 241);
-    const bool foodSafe = g.autonomous && eob3 && g.foodTrial &&
-        g.foodTrial->automatic && target && target->valid() &&
-        target->slot == g.foodTrial->slot &&
-        target->click.handlerObject == g.foodTrial->before.pc &&
-        g.foodTrial->before.item == cursor &&
-        spellScreen(objects) == target->screen &&
-        runtime::uiScreenActive(objects) &&
-        events.matchesLeftClickTarget(target->click);
-    const bool navigateSafe = g.autonomous && eob3 && g.uiNavigation &&
-        !runtime::uiScreenActive(objects) &&
-        cursor == g.uiNavigation->heldItem &&
-        objects.classOf(g.uiNavigation->pc) != 0xffff &&
-        events.matchesLeftClickTarget(g.uiNavigation->target);
-    if (!foodSafe && !navigateSafe) {
-        const int attemptedScreen = target ? target->screen : -1;
-        const int abortedUiItem = g.uiNavigation ?
-            g.uiNavigation->heldItem : -1;
-        const bool alreadyConsumed = !g.foodTrial &&
-                                     g.humanMouse.buttonHeld();
-        abortMouse(!alreadyConsumed);
-        if (abortedUiItem >= 0)
-            g.failedUiOpenItem = abortedUiItem;
-        if (g.mouseReleasePending) {
-            events.mouseButton(false, false);
-            g.mouseReleasePending = false;
-        }
-        if (g.foodTrial && g.foodTrial->automatic) {
-            g.failedFoodRegions.insert(food::ActuatorMemory::key(
-                g.foodTrial->slot, g.foodTrial->before.itemClass,
-                attemptedScreen));
-            g.foodTrial.reset();
-            g.foodStatus = "mouse-target-changed";
-        }
-        if (!alreadyConsumed)
-            std::cout << "[nn] mouse aborted: live UI target changed"
-                      << " aborts=" << g.mouseAborts << '\n';
-        return false;
-    }
-    const auto step = g.humanMouse.advance(mouse::HumanMouse::Clock::now());
-    switch (step.kind) {
-    case mouse::HumanMouse::Kind::Move:
-        events.mouseMove(step.x, step.y);
-        ++g.mouseMoves;
-        break;
-    case mouse::HumanMouse::Kind::Press:
-        events.mouseMove(step.x, step.y);
-        events.mouseButton(true, false);
-        ++g.mouseClicks;
-        if (g.uiNavigation) g.uiNavigation->clicked = true;
-        std::cout << "[nn] mouse native click target="
-                  << (g.uiNavigation ? "equipment-portrait" : "food")
-                  << " x=" << step.x << " y=" << step.y
-                  << " steps=" << g.mouseMoves << '\n';
-        break;
-    case mouse::HumanMouse::Kind::Release:
-        events.mouseButton(false, false);
-        g.mouseTarget.reset();
-        break;
-    case mouse::HumanMouse::Kind::Idle: break;
-    }
-    return true;
-}
-
-bool tryNavigateToEquipment(VM::EventSystem &events,
-                            VM::ObjectSystem &objects, bool eob3) {
-    if (!eob3 || !g.autonomous || !g.mouseAutoFood ||
-        g.foodTrial || g.uiNavigation || g.humanMouse.busy() ||
-        g.spellProbe.busy() || !g.foodActuatorReady ||
-        g.foodActuator.size() == 0 ||
-        runtime::uiScreenActive(objects) || events.leftButtonDown())
-        return false;
-    const int kernel = objects.firstObjectOfClass(kKernelClass);
-    if (kernel < 0 || spellScreen(objects) != 0) return false;
-    const int held = readWord(objects, kernel, kKernelClass, 241);
-    if (held < 0 || held == g.failedUiOpenItem ||
-        objects.classOf(held) == 0xffff) return false;
-    const int cls = objects.classOf(held);
-    if (food::actionForClass(cls) < 0) return false;
-    const auto party = partyResources(objects);
-    // The documented game portrait point (200,30) opens party slot zero's
-    // equipment sheet. Other portraits remain unmapped; never guess them.
-    if (!survival::valid(party) || party.ids[0] < 0 ||
-        party.hp[0] <= 0 || party.food[0] >= 60) return false;
-    bool knownFoodScreen = false;
-    for (int screen = 1; screen <= 8; ++screen)
-        if (g.foodActuator.find(0, cls, screen))
-            knownFoodScreen = true;
-    if (!knownFoodScreen) return false;
-
-    OnlinePolicy::Features features{};
-    std::array<bool, 4> blocked{};
-    Pose pose;
-    if (!context(objects, features, blocked, &pose) ||
-        combat::threatAhead(objects, pose)) return false;
-
-    // The repo's live-driven Glen script verifies portrait (200,30) and
-    // the native kernel M:240 inventory-open message. Still require an
-    // active, unambiguous registered SOP listener at that exact portrait.
-    const auto target = events.inspectLeftClickTarget(200, 30);
-    if (!target.valid() || target.message != 240 ||
-        (target.handlerObject != kernel &&
-         target.handlerObject != party.ids[0]))
-        return false;
-    const auto now = mouse::HumanMouse::Clock::now();
-    if (!g.humanMouse.start(events.pointX(), events.pointY(),
-                            target.x, target.y, now, g.rng()))
-        return false;
-    g.uiNavigation = State::UiNavigation{
-        target, party.ids[0], held, false, now
-    };
-    std::cout << "[nn] mouse navigating screen=equipment"
-              << " slot=0 item_class=" << cls
-              << " via_native_handler=" << target.message
-              << " trajectory=human-like"
-              << " x=" << target.x << " y=" << target.y << '\n';
-    return true;
-}
-
 bool canMove(int action, const std::array<bool, 4> &blocked) {
     switch (action) {
     case 0: return !blocked[0]; // forward
@@ -804,7 +662,8 @@ void shutdown() {
     flushLearning();
     combat::shutdown();
     g.autonomous = false;
-    abortMouse(false);
+    g.adviceOpen = false;
+    g.advicePending.reset();
     g.pending.reset();
     g.retreatPending.reset();
     g.foodTrial.reset();
@@ -816,26 +675,9 @@ std::filesystem::path checkpointPath() {
 }
 
 bool active() { return g.autonomous; }
-bool ownsMouse() { return g.autonomous; }
-bool acceptsCalibrationMouse() {
-    return g.autonomous && g.foodTrial && !g.foodTrial->automatic;
-}
-uint64_t mouseMoves() { return g.mouseMoves; }
-uint64_t mouseClicks() { return g.mouseClicks; }
-uint64_t mouseAborts() { return g.mouseAborts; }
-uint64_t mouseScreens() { return g.mouseScreens; }
-const char *mouseState() {
-    return g.humanMouse.busy() ? "moving-or-clicking" : "idle";
-}
-
-
 void setActive(bool enabled) {
     initialize();
-    const bool wasActive = g.autonomous;
     g.autonomous = enabled;
-    if (enabled && !wasActive)
-        g.failedUiOpenItem = -1; // explicit F1 user retry
-    abortMouse(false);
     combat::cancel();
     g.pacer.reset(ActionPacer::Clock::now());
     g.pending.reset();
@@ -1039,20 +881,9 @@ bool useCalibratedFood(VM::ObjectSystem &objects, VM::EventSystem &events,
     if (!queueFoodProbe(objects, events, slot, error)) return false;
     g.foodTrial->automatic = true;
     g.foodStatus = "executing";
-    if (!g.humanMouse.start(events.pointX(), events.pointY(),
-            profile->click.x, profile->click.y,
-            mouse::HumanMouse::Clock::now(), g.rng())) {
-        g.foodTrial.reset();
-        g.foodStatus = "mouse-unavailable";
-        error = "game mouse driver could not start safely";
-        return false;
-    }
-    g.mouseTarget = *profile;
-    std::cout << "[nn] automated native food mouse traversal"
-              << " slot=" << slot << " class=" << before.itemClass
-              << " target=" << before.pc
-              << " pos=(" << profile->click.x << ',' << profile->click.y << ")"
-              << " outcome=pending\n";
+    events.mouseMove(profile->click.x, profile->click.y);
+    events.mouseButton(true, false);
+    g.foodClickDown = true;
     return true;
 }
 
@@ -1115,32 +946,12 @@ bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
 void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
           bool uiActive, bool eob3) {
     combat::release(events); // always release pending click on next host pump
+    if (g.foodClickDown) {
+        events.mouseButton(false, false);
+        g.foodClickDown = false;
+    }
     // Observe first: a consumed item must not invalidate its own mouse release.
     observeFoodTrial(objects, events);
-    if (g.uiNavigation && g.uiNavigation->clicked && uiActive) {
-        // A camp/decision overlay is not proof of opening the character sheet.
-        if (spellScreen(objects) > 0) {
-            ++g.mouseScreens;
-            std::cout << "[nn] mouse navigated to native equipment UI"
-                      << " opens=" << g.mouseScreens
-                      << " screen=" << spellScreen(objects) << '\n';
-        } else {
-            g.failedUiOpenItem = g.uiNavigation->heldItem;
-            ++g.mouseAborts;
-            std::cout << "[nn] mouse navigation unverified UI overlay; retry suppressed\n";
-        }
-        abortMouse(false);
-    }
-    tickHumanMouse(events, objects, eob3);
-    if (g.uiNavigation && g.uiNavigation->clicked &&
-        !g.humanMouse.busy() &&
-        mouse::HumanMouse::Clock::now() - g.uiNavigation->start >
-            std::chrono::seconds(3)) {
-        g.failedUiOpenItem = g.uiNavigation->heldItem;
-        g.uiNavigation.reset();
-        ++g.mouseAborts;
-        std::cout << "[nn] mouse inventory navigation unverified; retry suppressed\n";
-    }
     if (g.foodTrial) {
         // Preserve the food plate/UI sequence; no parallel autonomous keys
         // or combat clicks while awaiting real native consumption evidence.
@@ -1149,35 +960,6 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         g.retreatPending.reset();
         g.pacer.reset(ActionPacer::Clock::now());
         return;
-    }
-    // With a previously verified UI listener, the agent can autonomously
-    // consume in-hand food while its matching equipment screen is open.
-    // It never clicks an unknown screen or retrieves an unverified item.
-    if (g.autonomous && eob3 && uiActive && g.mouseAutoFood &&
-        !g.foodTrial && !g.humanMouse.busy() &&
-        !g.spellProbe.busy() && g.foodActuatorReady &&
-        g.foodActuator.size() > 0) {
-        const int kernel = objects.firstObjectOfClass(kKernelClass);
-        const int cursor = readWord(objects, kernel, kKernelClass, 241);
-        if (cursor >= 0 && objects.classOf(cursor) != 0xffff &&
-            food::actionForClass(objects.classOf(cursor)) >= 0) {
-            for (int slot = 0; slot < 6; ++slot) {
-                const auto candidate = foodSnapshot(objects, slot);
-                if (candidate.pc < 0 || candidate.hitpoints <= 0 ||
-                    candidate.food < 0 || candidate.food >= 60) continue;
-                if (!g.foodActuator.find(slot, candidate.itemClass,
-                                          spellScreen(objects))) continue;
-                std::string error;
-                if (useCalibratedFood(objects, events, slot, error)) {
-                    std::cout << "[nn] autonomous mouse chose food slot="
-                              << slot << " hunger=" << candidate.food
-                              << " item_class=" << candidate.itemClass
-                              << " trajectory=human-like"
-                              << " expected=verified-consumption\n";
-                    break;
-                }
-            }
-        }
     }
     if (g.spellProbe.shouldClose()) {
         closeSpellProbe(objects); // close even if autonomy toggled off or UI is up
@@ -1200,16 +982,6 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         g.retreatPending.reset();
         // Returning from a menu or restarting autonomous play must not
         // release an action accumulated while gameplay was unavailable.
-        g.pacer.reset(ActionPacer::Clock::now());
-        return;
-    }
-    if (g.uiNavigation || g.humanMouse.busy()) {
-        // Let this native mouse action complete before selecting new keys.
-        g.pacer.reset(ActionPacer::Clock::now());
-        return;
-    }
-    // Only safe, source-verified portrait regions can open an equipment UI.
-    if (tryNavigateToEquipment(events, objects, eob3)) {
         g.pacer.reset(ActionPacer::Clock::now());
         return;
     }
