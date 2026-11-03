@@ -30,7 +30,7 @@ struct CalibratedClick {
     bool valid() const {
         return slot >= 0 && slot < 6 && actionForClass(itemClass) >= 0 &&
                screen >= 0 && screen <= 255 && click.valid() &&
-               click.handlerClass <= 65534 && click.handlerObject < 200000 &&
+               click.handlerClass <= 65534 && click.handlerObject < 200000 && click.handle < 256 &&
                click.message <= 65535;
     }
 };
@@ -81,7 +81,8 @@ public:
                  << ' ' << c.handle << '\n';
         }
         const std::string payload = text.str();
-        const auto staging = std::filesystem::path(path.string() + ".tmp");
+        auto staging = path;
+        staging += ".tmp";
         {
             std::ofstream out(staging, std::ios::binary | std::ios::trunc);
             if (!out || !(out << payload << "checksum "
