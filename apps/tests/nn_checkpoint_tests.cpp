@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 #include "../thirdeye/nn/online_policy.hpp"
+#include "../thirdeye/nn/shared_brain.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -66,6 +67,100 @@ TEST(nnCheckpoint, LearningAndLoadedWeightsApplyImmediately) {
     EXPECT_EQ(live.samples(), 150u);
     EXPECT_EQ(live.weights(), savedWeights);
     EXPECT_EQ(live.predict(kContext).action, 3);
+}
+
+TEST(nnCheckpoint, MergesLegacyEOB3AndDungeonHackBrainsExactlyOnce) {
+    namespace mode = THIRDEYE::nn::mode;
+    TempCheckpoint tmp;
+    const auto shared = mode::brainFileForDocuments(tmp.dir);
+    fs::create_directories(shared.parent_path());
+    OnlinePolicy eob;
+    OnlinePolicy hack;
+    for (int i = 0; i < 40; ++i)
+        ASSERT_TRUE(eob.reinforce(kContext, 0, 1.8, true));
+    for (int i = 0; i < 60; ++i)
+        ASSERT_TRUE(hack.reinforce(kContext, 4, -1.25, false));
+    const auto eobLegacy = mode::legacyBrainFileForDocuments(tmp.dir, false);
+    const auto hackLegacy = mode::legacyBrainFileForDocuments(tmp.dir, true);
+    std::string error;
+    ASSERT_TRUE(eob.save(eobLegacy, error)) << error;
+    ASSERT_TRUE(hack.save(hackLegacy, error)) << error;
+    const auto originalEob = readAll(eobLegacy);
+    const auto originalHack = readAll(hackLegacy);
+
+    OnlinePolicy merged;
+    const auto migration = mode::restoreSharedBrain(merged, tmp.dir);
+    ASSERT_TRUE(migration.ready) << migration.error;
+    EXPECT_TRUE(migration.migrated);
+    EXPECT_TRUE(migration.restored);
+    EXPECT_TRUE(fs::exists(shared));
+    EXPECT_EQ(merged.samples(), 100u);
+    EXPECT_EQ(merged.successes(), 40u);
+    EXPECT_EQ(merged.failures(), 60u);
+    EXPECT_EQ(readAll(eobLegacy), originalEob);
+    EXPECT_EQ(readAll(hackLegacy), originalHack);
+    for (std::size_t i = 0; i < merged.weights().size(); ++i)
+        EXPECT_NEAR(merged.weights()[i],
+                    0.4 * eob.weights()[i] + 0.6 * hack.weights()[i], 1e-12);
+    EXPECT_NEAR(merged.meanReward(),
+                0.4 * eob.meanReward() + 0.6 * hack.meanReward(), 1e-12);
+
+    // A fresh process (or a new game in the other executable) must use
+    // shared learned weights immediately, not re-import legacy training.
+    for (int i = 0; i < 12; ++i)
+        ASSERT_TRUE(hack.reinforce(kContext, 1, 1.0, true));
+    ASSERT_TRUE(hack.save(hackLegacy, error)) << error;
+    OnlinePolicy newSession;
+    const auto loaded = mode::restoreSharedBrain(newSession, tmp.dir);
+    ASSERT_TRUE(loaded.ready) << loaded.error;
+    EXPECT_FALSE(loaded.migrated);
+    EXPECT_TRUE(loaded.restored);
+    EXPECT_EQ(newSession.weights(), merged.weights());
+    EXPECT_EQ(newSession.samples(), 100u);
+}
+
+TEST(nnCheckpoint, CorruptedSharedBrainIsNeverOverwrittenByLegacyMigration) {
+    namespace mode = THIRDEYE::nn::mode;
+    TempCheckpoint tmp;
+    const auto shared = mode::brainFileForDocuments(tmp.dir);
+    fs::create_directories(shared.parent_path());
+    const std::string broken = "partial shared checkpoint";
+    writeAll(shared, broken);
+    OnlinePolicy oldBrain;
+    ASSERT_TRUE(oldBrain.reinforce(kContext, 2, 1.8, true));
+    std::string error;
+    ASSERT_TRUE(oldBrain.save(
+        mode::legacyBrainFileForDocuments(tmp.dir, false), error)) << error;
+    OnlinePolicy running;
+    const auto outcome = mode::restoreSharedBrain(running, tmp.dir);
+    EXPECT_FALSE(outcome.ready);
+    EXPECT_FALSE(outcome.restored);
+    EXPECT_FALSE(outcome.migrated);
+    EXPECT_EQ(readAll(shared), broken);
+    EXPECT_EQ(running.samples(), 0u);
+}
+
+TEST(nnCheckpoint, OneBadLegacyBrainCannotEraseOtherGamesLearning) {
+    namespace mode = THIRDEYE::nn::mode;
+    TempCheckpoint tmp;
+    const auto shared = mode::brainFileForDocuments(tmp.dir);
+    fs::create_directories(shared.parent_path());
+    OnlinePolicy eob;
+    ASSERT_TRUE(eob.reinforce(kContext, 3, 1.8, true));
+    std::string error;
+    ASSERT_TRUE(eob.save(
+        mode::legacyBrainFileForDocuments(tmp.dir, false), error)) << error;
+    const auto badLegacy = mode::legacyBrainFileForDocuments(tmp.dir, true);
+    writeAll(badLegacy, "not an ARJ or NN checkpoint");
+    OnlinePolicy restored;
+    const auto result = mode::restoreSharedBrain(restored, tmp.dir);
+    ASSERT_TRUE(result.ready) << result.error;
+    EXPECT_TRUE(result.migrated);
+    EXPECT_TRUE(result.restored);
+    EXPECT_FALSE(result.warning.empty());
+    EXPECT_EQ(restored.weights(), eob.weights());
+    EXPECT_EQ(restored.samples(), eob.samples());
+    EXPECT_EQ(readAll(badLegacy), "not an ARJ or NN checkpoint");
 }
 
 TEST(nnCheckpoint, FailedLoadNeverMutatesLiveModel) {
