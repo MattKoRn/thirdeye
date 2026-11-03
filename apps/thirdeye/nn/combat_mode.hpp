@@ -21,6 +21,8 @@ void shutdown();
 void flushLearning();
 void cancel();
 bool waiting();
+// Real front-cell EOB3 NPC observation; retreat never invents a threat.
+bool threatAhead(VM::ObjectSystem &objects, const mode::Pose &pose);
 void release(VM::EventSystem &events);
 void observe(VM::ObjectSystem &objects, const mode::Pose &pose, bool training);
 bool attack(VM::EventSystem &events, VM::ObjectSystem &objects,
