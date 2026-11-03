@@ -101,6 +101,8 @@ struct State {
     bool adviceOpen = false;
     bool adviceReopen = false;
     uint64_t adviceGeneration = 0;
+    Pose advicePose{};
+    std::string adviceResult = "Choose a neural suggestion to start learning.";
     struct AdvicePending {
         OnlinePolicy::Features features{};
         Pose before{};
@@ -527,6 +529,99 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
 }
 
 
+bool regenerateAdvice(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
+    if (!eob3 || uiActive || g.advicePending) return false;
+    OnlinePolicy::Features features{};
+    std::array<bool, 4> blocked{};
+    Pose pose{};
+    if (!context(objects, features, blocked, &pose) || pose.level < 0)
+        return false;
+    std::array<bool, OnlinePolicy::kActions> allowed = {
+        !blocked[0], !blocked[2], !blocked[3], !blocked[1], true, true
+    };
+    if (g.failurePose && *g.failurePose == pose)
+        for (std::size_t i = 0; i < allowed.size(); ++i)
+            if (g.failedActions[i]) allowed[i] = false;
+    const auto frontier = frontierActions(pose, allowed, g.visited);
+    auto batch = advice::generate(g.brain, features, allowed, frontier,
+                                  ++g.adviceGeneration);
+    if (batch.count == 0) return false;
+    g.adviceBatch = std::move(batch);
+    g.advicePose = pose;
+    g.adviceOpen = true;
+    std::cout << "[nn] advice batch=" << g.adviceGeneration
+              << " count=" << g.adviceBatch.count
+              << " trained_samples=" << g.brain.samples() << '\n';
+    for (int i = 0; i < g.adviceBatch.count; ++i)
+        std::cout << "[nn] advice " << (i + 1) << ": "
+                  << g.adviceBatch.suggestions[static_cast<std::size_t>(i)].label
+                  << " score="
+                  << g.adviceBatch.suggestions[static_cast<std::size_t>(i)].score
+                  << '\n';
+    return true;
+}
+
+void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
+                   bool eob3, bool uiActive) {
+    if (!g.advicePending) return;
+    const auto trial = *g.advicePending;
+    const auto now = ActionPacer::Clock::now();
+    const int key = OnlinePolicy::keyForAction(trial.action);
+    // A queued key is not an executed movement. Give the VM an extra tick
+    // after dispatch before evaluating a success or failure.
+    if (now - trial.sent < std::chrono::milliseconds(200) ||
+        events.findEvent(VM::SYS_KEYDOWN, key) >= 0) return;
+    g.advicePending.reset();
+    OnlinePolicy::Features currentFeatures{};
+    std::array<bool, 4> blocked{};
+    Pose current{};
+    const bool observed = eob3 && !uiActive &&
+        context(objects, currentFeatures, blocked, &current);
+    const int travel = std::abs(trial.before.x - current.x) +
+                       std::abs(trial.before.y - current.y);
+    const int floors = std::abs(trial.before.level - current.level);
+    const bool verified = observed &&
+        ((floors == 0 && travel <= 1) ||
+         (floors == 1 && trial.action < 4));
+    if (verified) {
+        const bool firstVisit = g.visited.insert(visitKey(current)).second;
+        const Outcome result = evaluateOutcome(
+            trial.before, current, trial.action, firstVisit);
+        if (result.success) {
+            g.failurePose.reset();
+            g.failedActions.fill(false);
+        } else {
+            if (!g.failurePose || *g.failurePose != trial.before)
+                g.failedActions.fill(false);
+            g.failurePose = trial.before;
+            g.failedActions[static_cast<std::size_t>(trial.action)] = true;
+        }
+        if (g.trainingEnabled &&
+            g.brain.reinforce(trial.features, trial.action,
+                              result.reward, result.success)) {
+            g.dirty = true;
+            autoSave(false);
+        }
+        g.adviceResult = std::string(result.success ? "Worked" : "Blocked") +
+            ": " + advice::kNames[static_cast<std::size_t>(trial.action)] +
+            " | reward " + std::to_string(result.reward);
+        std::cout << "[nn] advice learned action="
+                  << advice::kNames[static_cast<std::size_t>(trial.action)]
+                  << " success=" << (result.success ? "yes" : "no")
+                  << " reward=" << result.reward
+                  << " samples=" << g.brain.samples()
+                  << " mean_reward=" << g.brain.meanReward() << '\n';
+    } else {
+        g.adviceResult = "Action result unverified; no neural reward applied.";
+        std::cout << "[nn] advice outcome unverified (screen/pose changed)"
+                  << " trained=no\n";
+    }
+    if (g.adviceReopen && !uiActive && eob3) {
+        g.adviceReopen = false;
+        regenerateAdvice(objects, eob3, uiActive);
+    } else g.adviceReopen = false;
+}
+
 bool canMove(int action, const std::array<bool, 4> &blocked) {
     switch (action) {
     case 0: return !blocked[0]; // forward
@@ -663,6 +758,7 @@ void shutdown() {
     combat::shutdown();
     g.autonomous = false;
     g.adviceOpen = false;
+    g.adviceReopen = false;
     g.advicePending.reset();
     g.pending.reset();
     g.retreatPending.reset();
@@ -675,9 +771,71 @@ std::filesystem::path checkpointPath() {
 }
 
 bool active() { return g.autonomous; }
+
+bool adviceMenuOpen() { return g.adviceOpen; }
+int adviceMenuCount() { return g.adviceOpen ? g.adviceBatch.count : 0; }
+uint64_t adviceMenuGeneration() { return g.adviceGeneration; }
+std::string adviceMenuLabel(int row) {
+    if (!g.adviceOpen || row < 0 || row >= g.adviceBatch.count) return {};
+    return g.adviceBatch.suggestions[static_cast<std::size_t>(row)].label;
+}
+std::string adviceLastResult() { return g.adviceResult; }
+void closeAdviceMenu() {
+    g.adviceOpen = false;
+    g.adviceReopen = false;
+}
+bool toggleAdviceMenu(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
+    initialize();
+    if (g.adviceOpen) {
+        closeAdviceMenu();
+        return false;
+    }
+    if (g.advicePending) {
+        // F1 during execution cancels only the next automatic menu reopen.
+        g.adviceReopen = false;
+        return false;
+    }
+    // F1 is now a user-invoked advice menu, NOT autonomous takeover.
+    if (g.autonomous) setActive(false);
+    return regenerateAdvice(objects, eob3, uiActive);
+}
+bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
+                  int row, bool eob3, bool uiActive) {
+    if (!g.adviceOpen || g.advicePending || !eob3 || uiActive ||
+        row < 0 || row >= g.adviceBatch.count) return false;
+    OnlinePolicy::Features features{};
+    std::array<bool, 4> blocked{};
+    Pose current{};
+    if (!context(objects, features, blocked, &current) ||
+        current != g.advicePose) {
+        g.adviceResult = "Scene changed. Open F1 again for fresh advice.";
+        closeAdviceMenu();
+        return false;
+    }
+    const int action =
+        g.adviceBatch.suggestions[static_cast<std::size_t>(row)].action;
+    if (action < 0 || !canMove(action, blocked)) {
+        g.adviceResult = "Action no longer passable; refreshing advice.";
+        regenerateAdvice(objects, eob3, uiActive);
+        return false;
+    }
+    const int key = OnlinePolicy::keyForAction(action);
+    if (key < 0) return false;
+    g.advicePending = State::AdvicePending{
+        features, current, action, ActionPacer::Clock::now()};
+    g.adviceOpen = false;
+    g.adviceReopen = true;
+    events.postEvent(0, VM::SYS_KEYDOWN, key);
+    std::cout << "[nn] advice execute=" << advice::kNames[static_cast<std::size_t>(action)]
+              << " batch=" << g.adviceGeneration
+              << " native_key=" << key << " awaiting_observed-outcome\n";
+    return true;
+}
+
 void setActive(bool enabled) {
     initialize();
     g.autonomous = enabled;
+    if (enabled) closeAdviceMenu();
     combat::cancel();
     g.pacer.reset(ActionPacer::Clock::now());
     g.pending.reset();
@@ -952,6 +1110,11 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     }
     // Observe first: a consumed item must not invalidate its own mouse release.
     observeFoodTrial(objects, events);
+    if (g.advicePending) {
+        observeAdvice(events, objects, eob3, uiActive);
+        return; // never issue an automatic action during advice feedback
+    }
+    if (g.adviceOpen) return; // in-game overlay owns selection
     if (g.foodTrial) {
         // Preserve the food plate/UI sequence; no parallel autonomous keys
         // or combat clicks while awaiting real native consumption evidence.
