@@ -549,7 +549,10 @@ bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
         runtime::uiScreenActive(objects) &&
         events.matchesLeftClickTarget(target->click);
     if (!safe) {
-        abortMouse(true);
+        const int attemptedScreen = target ? target->screen : -1;
+        const bool alreadyConsumed = g.foodTrial == std::nullopt &&
+                                     g.humanMouse.buttonHeld();
+        abortMouse(!alreadyConsumed);
         if (g.mouseReleasePending) {
             events.mouseButton(false, false);
             g.mouseReleasePending = false;
@@ -557,12 +560,13 @@ bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
         if (g.foodTrial && g.foodTrial->automatic) {
             g.failedFoodRegions.insert(food::ActuatorMemory::key(
                 g.foodTrial->slot, g.foodTrial->before.itemClass,
-                target ? target->screen : -1));
+                attemptedScreen));
             g.foodTrial.reset();
             g.foodStatus = "mouse-target-changed";
         }
-        std::cout << "[nn] mouse aborted: live UI target changed"
-                  << " unsafe_clicks=0 aborts=" << g.mouseAborts << '\n';
+        if (!alreadyConsumed)
+            std::cout << "[nn] mouse aborted: live UI target changed"
+                      << " aborts=" << g.mouseAborts << '\n';
         return false;
     }
     const auto step = g.humanMouse.advance(mouse::HumanMouse::Clock::now());
@@ -736,6 +740,9 @@ std::filesystem::path checkpointPath() {
 
 bool active() { return g.autonomous; }
 bool ownsMouse() { return g.autonomous; }
+bool acceptsCalibrationMouse() {
+    return g.autonomous && g.foodTrial && !g.foodTrial->automatic;
+}
 uint64_t mouseMoves() { return g.mouseMoves; }
 uint64_t mouseClicks() { return g.mouseClicks; }
 uint64_t mouseAborts() { return g.mouseAborts; }
@@ -1027,10 +1034,9 @@ bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
 void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
           bool uiActive, bool eob3) {
     combat::release(events); // always release pending click on next host pump
-    tickHumanMouse(events, objects, eob3); // one small cursor step per host pump
-    // Native feeding is confirmed by the SOP after the player/control socket
-    // operates its already-verified food plate. Observe even in equipment UI.
+    // Observe first: a consumed item must not invalidate its own mouse release.
     observeFoodTrial(objects, events);
+    tickHumanMouse(events, objects, eob3);
     if (g.foodTrial) {
         // Preserve the food plate/UI sequence; no parallel autonomous keys
         // or combat clicks while awaiting real native consumption evidence.
@@ -1039,6 +1045,35 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
         g.retreatPending.reset();
         g.pacer.reset(ActionPacer::Clock::now());
         return;
+    }
+    // With a previously verified UI listener, the agent can autonomously
+    // consume in-hand food while its matching equipment screen is open.
+    // It never clicks an unknown screen or retrieves an unverified item.
+    if (g.autonomous && eob3 && uiActive && g.mouseAutoFood &&
+        !g.foodTrial && !g.humanMouse.busy() &&
+        !g.spellProbe.busy() && g.foodActuatorReady &&
+        g.foodActuator.size() > 0) {
+        const int kernel = objects.firstObjectOfClass(kKernelClass);
+        const int cursor = readWord(objects, kernel, kKernelClass, 241);
+        if (cursor >= 0 && objects.classOf(cursor) != 0xffff &&
+            food::actionForClass(objects.classOf(cursor)) >= 0) {
+            for (int slot = 0; slot < 6; ++slot) {
+                const auto candidate = foodSnapshot(objects, slot);
+                if (candidate.pc < 0 || candidate.hitpoints <= 0 ||
+                    candidate.food < 0 || candidate.food >= 60) continue;
+                if (!g.foodActuator.find(slot, candidate.itemClass,
+                                          spellScreen(objects))) continue;
+                std::string error;
+                if (useCalibratedFood(objects, events, slot, error)) {
+                    std::cout << "[nn] autonomous mouse chose food slot="
+                              << slot << " hunger=" << candidate.food
+                              << " item_class=" << candidate.itemClass
+                              << " trajectory=human-like"
+                              << " expected=verified-consumption\n";
+                    break;
+                }
+            }
+        }
     }
     if (g.spellProbe.shouldClose()) {
         closeSpellProbe(objects); // close even if autonomy toggled off or UI is up
