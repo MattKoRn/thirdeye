@@ -155,5 +155,12 @@ inline int rowAt(int x, int y, int count) {
     return (y - kRowY) / kRowHeight;
 }
 
+// Repaint the frozen overlay only when the highlighted choice changes.
+// Per-pixel pointer movements and empty wait-event timeouts must not cause
+// redundant SDL presents (and visible flicker on some renderers).
+inline bool hoverChanged(int oldX, int oldY, int newX, int newY, int count) {
+    return rowAt(oldX, oldY, count) != rowAt(newX, newY, count);
+}
+
 } // namespace THIRDEYE::nn::advice
 #endif
