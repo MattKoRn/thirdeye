@@ -138,12 +138,18 @@ bool toggle();
 void setActive(bool enabled);
 bool consumesManualKey(int32_t code);
 
-// F1 displays a modal, player-controlled five-choice neural advice overlay.
+// Optional manual five-choice advice overlay (also accessible over control
+// socket). The F1 key toggles auto-selected advice instead of showing it.
 // Works with both EOB3 and Dungeon Hack native level-map observations.
 // Each suggestion targets a concrete adjacent-cell coordinate or compass
 // heading, derived from the live map and learned weights. Clicking it executes
 // one native action and verifies the EXACT objective before reinforcement.
 // No invented interaction targets and no mouse takeover.
+// F1 toggles unattended two-second objective advice (no modal panel).
+// Each choice uses the regular pose-verified reinforcement and checkpointing.
+bool autoAdviceEnabled();
+bool toggleAutoAdvice();
+void setAutoAdvice(bool enabled);
 bool adviceMenuOpen();
 int adviceMenuCount();
 uint64_t adviceMenuGeneration();
