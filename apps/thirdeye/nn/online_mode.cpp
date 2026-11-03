@@ -578,7 +578,7 @@ bool regenerateAdvice(VM::ObjectSystem &objects, bool eob3, bool uiActive,
     g.advicePose = pose;
     g.adviceOpen = showMenu;
     if (!showMenu) return true; // auto mode logs only attempted objectives
-    std::cout << "[nn] advice batch= << g.adviceGeneration
+    std::cout << "[nn] advice batch=" << g.adviceGeneration
               << " count=" << g.adviceBatch.count
               << " trained_samples=" << g.brain.samples() << '\n';
     for (int i = 0; i < g.adviceBatch.count; ++i)
@@ -902,8 +902,8 @@ bool toggleAdviceMenu(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
         : "Waiting for the game map. F1 closes to resume.";
     return true;
 }
-bool chooseAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
-                  int row, bool eob3, bool uiActive) {
+bool chooseAdviceImpl(VM::EventSystem &events, VM::ObjectSystem &objects,
+                      int row, bool eob3, bool uiActive, bool automatic) {
     if ((!g.adviceOpen && !(automatic && g.autoAdvice)) ||
         g.advicePending || uiActive ||
         row < 0 || row >= g.adviceBatch.count) return false;
