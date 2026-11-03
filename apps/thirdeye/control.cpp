@@ -183,6 +183,8 @@ std::string handle(const std::vector<std::string> &tok,
                    " food_reward=" + std::to_string(nn::mode::foodMeanReward()) +
                    " food_checkpoint=" + nn::mode::foodCheckpointStatus() +
                    " food_probe=" + nn::mode::foodProbeStatus() +
+                   " food_calibrations=" +
+                       std::to_string(nn::mode::foodCalibrations()) +
                    " tactic_samples=" + std::to_string(nn::mode::tacticalSamples()) +
                    " enemy_tactics=" + std::to_string(nn::mode::knownWeaknesses()) +
                    " tactic_checkpoint=" + nn::mode::tacticalCheckpointStatus() +
@@ -196,25 +198,33 @@ std::string handle(const std::vector<std::string> &tok,
         }
         if (sub == "food") {
             if (tok.size() == 4 &&
-                (tok[2] == "probe" || tok[2] == "recommend")) {
+                (tok[2] == "probe" || tok[2] == "recommend" ||
+                 tok[2] == "use")) {
                 int slot = -1;
                 if (!parseInt(tok[3], slot) || slot < 0 || slot >= 6)
-                    return "err nn food <probe|recommend> <party-slot-0..5>\n";
+                    return "err nn food <probe|recommend|use> <party-slot-0..5>\n";
                 if (tok[2] == "recommend")
                     return nn::mode::foodRecommendation(objects, slot);
+                if (tok[2] == "use") {
+                    std::string error;
+                    if (!nn::mode::useCalibratedFood(objects, events, slot, error))
+                        return "err " + error + "\n";
+                    return "nn food-use click sent to verified native PC region\nok\n";
+                }
                 std::string error;
-                if (!nn::mode::queueFoodProbe(objects, slot, error))
+                if (!nn::mode::queueFoodProbe(objects, events, slot, error))
                     return "err " + error + "\n";
                 return "nn food probe armed: click the native food plate"
-                       " with the held food item; check nn status\nok\n";
+                       " with the held food item ONCE; check nn status\nok\n";
             }
             if (tok.size() == 3 && tok[2] == "status")
                 return "nn food probe=" +
                        std::string(nn::mode::foodProbeStatus()) +
+                       " calibrations=" + std::to_string(nn::mode::foodCalibrations()) +
                        " samples=" + std::to_string(nn::mode::foodSamples()) +
                        " checkpoint=" + nn::mode::foodCheckpointStatus() +
                        "\nok\n";
-            return "err nn food <probe slot|recommend slot|status>\n";
+            return "err nn food <probe slot|recommend slot|use slot|status>\n";
         }
         if (sub == "spell") {
             if (tok.size() == 4 && tok[2] == "status") {
