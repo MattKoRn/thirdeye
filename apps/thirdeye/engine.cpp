@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "game_boot.hpp"
 #include "automap.hpp"
 #include "control.hpp"
 #include "nn/online_mode.hpp"
@@ -379,18 +380,12 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 					gfx.toggleFullscreen();
 				break;
 			}
-			// F1 is now a clickable neural advice menu, not an AUTO takeover.
-			// It reads live EOB3 state; F1 again or Escape closes the overlay.
+			// F1 toggles hands-free objective advice. No modal screen:
+			// the VM continues running and the next measured action is selected
+			// after a two-second wall-clock deadline.
 			if (ev.key.scancode == SDL_SCANCODE_F1) {
-				if (!ev.key.repeat) {
-					const bool opened = THIRDEYE::nn::mode::toggleAdviceMenu(
-					    objects, !THIRDEYE::runtime::gDungeonHack,
-					    THIRDEYE::runtime::uiScreenActive(objects));
-					if (opened) adviceHoverX = adviceHoverY = -1;
-					std::cout << "[nn] F1 advice menu "
-					          << (opened ? "opened" : "closed/unavailable")
-					          << std::endl;
-				}
+				if (!ev.key.repeat)
+					THIRDEYE::nn::mode::toggleAutoAdvice();
 				break;
 			}
 			if (THIRDEYE::nn::mode::adviceMenuOpen()) {
@@ -878,8 +873,9 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 					if (menuEvent.key.scancode == SDL_SCANCODE_F11) {
 						gfx.toggleFullscreen();
 						repaint = true;
-					} else if (menuEvent.key.scancode == SDL_SCANCODE_F1 ||
-					           menuEvent.key.key == SDLK_ESCAPE) {
+					} else if (menuEvent.key.scancode == SDL_SCANCODE_F1) {
+						THIRDEYE::nn::mode::toggleAutoAdvice();
+					} else if (menuEvent.key.key == SDLK_ESCAPE) {
 						THIRDEYE::nn::mode::closeAdviceMenu();
 					} else if (menuEvent.key.scancode >= SDL_SCANCODE_1 &&
 					           menuEvent.key.scancode <= SDL_SCANCODE_5) {
@@ -1833,13 +1829,17 @@ void THIRDEYE::Engine::handleBootWall(const VM::VmError &e,
 // Initialise and enter main loop.
 void THIRDEYE::Engine::go() {
 	gBootStart = std::chrono::steady_clock::now();
-	// Restore the Documents/ThirdeyeNN brain even without a control socket.
+	std::filesystem::path resFile = resolveResourceFile();
+	// Determine the game BEFORE any neural or VM initialization. Otherwise
+	// the normal Dungeon Hack shortcut is mistaken for EOB3 and falls into
+	// the full-code diagnostic dumper when INTRO.GFF is absent.
+	THIRDEYE::runtime::gDungeonHack =
+	    THIRDEYE::boot::isDungeonHackResource(resFile);
+	// Restore the shared Documents/ThirdeyeNN brain for either game.
 	THIRDEYE::nn::mode::initialize();
-	// Live control channel (docs/control_channel.md). Env var only for now;
-	// no CLI flag until someone asks. Zero cost when unset.
+	// Live control channel (docs/control_channel.md).
 	if (const char *p = std::getenv("THIRDEYE_CTL"))
 		THIRDEYE::control::init(p);
-	std::filesystem::path resFile = resolveResourceFile();
 
 	if (!std::filesystem::exists(resFile)) {
 		throw std::runtime_error(resFile.string() + " does not exist!");
@@ -1884,16 +1884,7 @@ void THIRDEYE::Engine::go() {
 	// bytecode VM. EOB3 boots the "start" object; Dungeon Hack's HACK.BAT
 	// wires it as `aesop open opening` (intro) / `aesop hack phase-one` (game).
 	if (mForceVM || mSkipMenu || mSkipIntro) {
-		std::string bootName = "start";
-		std::string resName = resFile.filename().string();
-		std::transform(resName.begin(), resName.end(), resName.begin(),
-		    [](unsigned char c) { return std::tolower(c); });
-		if (resName == "open.res") bootName = "opening";
-		else if (resName == "hack.res") bootName = "phase-one";
-		// DH shares the AESOP runtime with EOB3 but not all of its table
-		// constants (palette-region bases, so far).
-		THIRDEYE::runtime::gDungeonHack =
-		    (resName == "open.res" || resName == "hack.res");
+		std::string bootName = THIRDEYE::boot::initialObject(resFile);
 		// Debug hook: force any boot object by name (e.g. THIRDEYE_BOOT=phase-two).
 		if (const char *b = std::getenv("THIRDEYE_BOOT")) bootName = b;
 		// DH-only: make sure a dungeon exists before we boot, so that jumping
@@ -1904,7 +1895,7 @@ void THIRDEYE::Engine::go() {
 		// Failure only matters if we are about to boot phase-two: phase-one is
 		// the menu and never touches the dungeon, but phase-two would come up
 		// on whatever half-set is on disk.
-		if (resName == "hack.res") {
+		if (THIRDEYE::boot::resourceName(resFile) == "hack.res") {
 			const bool ok = THIRDEYE::runtime::dh::ensureSavegameFiles(
 			    resFile.parent_path());
 			if (!ok && bootName == "phase-two") {
@@ -1923,7 +1914,9 @@ void THIRDEYE::Engine::go() {
 	// we loaded and stop -- no need to spin up graphics/sound. The SOP VM is
 	// not yet wired into the main loop.
 	std::filesystem::path introPath = resFile.parent_path() / "INTRO.GFF";
-	if (mGame == GAME_UNKN || !std::filesystem::exists(introPath)) {
+	if (mGame == GAME_UNKN ||
+	    (THIRDEYE::boot::needsExternalIntro(resFile) &&
+	     !std::filesystem::exists(introPath))) {
 		std::cout << "Loaded resource file: " << resFile << std::endl;
 		resource.showResources();
 		runResourceVM(resource);
@@ -1936,6 +1929,8 @@ void THIRDEYE::Engine::go() {
 	// loop that lived here faked, minus the dead ends (its faded-in title
 	// image had no SOP behind it, so nothing was selectable). Museum code
 	// removed; git history has it.
-	bootObject(resource, "start");
+	// Unlike EOB3, Dungeon Hack launches "phase-one" even when invoked
+	// from the ordinary desktop shortcut (without --vm/--skip-menu).
+	bootObject(resource, THIRDEYE::boot::initialObject(resFile));
 }
 
