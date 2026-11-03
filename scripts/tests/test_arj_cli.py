@@ -56,6 +56,84 @@ class NativeArjTests(unittest.TestCase):
             self.assertEqual((out / "SAVEGAME/SLOT.BIN").read_bytes(), b"save")
             self.assertEqual((out / "CHARGEN/HERO.DAT").read_bytes(), b"character")
 
+    def test_dungeon_hack_nested_savegame_file(self):
+        """The retail DATA1.ARJ contains SAVEGAME/PC.DAT."""
+        exe = self.decoder()
+        for member in ("SAVEGAME/PC.DAT", r"SAVEGAME\\PC.DAT"):
+            with self.subTest(member=member), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "DATA1.ARJ"
+                source.write_bytes(arj_volume(member, b"saved settings"))
+                out = root / "output"
+                subprocess.run([str(exe), str(out), "hack", str(source)],
+                               check=True, capture_output=True, text=True)
+                self.assertEqual((out / "SAVEGAME" / "PC.DAT").read_bytes(),
+                                 b"saved settings")
+
+    def test_reject_unsafe_nested_paths_before_writing(self):
+        exe = self.decoder()
+        names = (
+            "../escape.txt", "SAVEGAME/../../escape.txt",
+            "/absolute.txt", r"\\absolute.txt", "C:/escape.txt",
+            r"C:\\escape.txt", "SAVEGAME//PC.DAT",
+            "SAVEGAME/../PC.DAT", r"SAVEGAME\\..\\PC.DAT",
+            "SAVEGAME/./PC.DAT", "SAVEGAME/CON/PC.DAT",
+            "SAVEGAME/NUL.TXT", "SAVEGAME/PC.DAT/",
+            "SAVEGAME/PC.DAT:stream", "SAVEGAME/TRAIL. /PC.DAT",
+        )
+        for member in names:
+            with self.subTest(member=member), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "DATA1.ARJ"
+                source.write_bytes(arj_volume(member, b"unsafe"))
+                out = root / "output"
+                result = subprocess.run([str(exe), str(out), "hack", str(source)],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("Unsafe ARJ member name", result.stderr)
+                self.assertFalse(out.exists(), member)
+
+    def test_reject_normalized_duplicate_and_file_directory_conflict(self):
+        exe = self.decoder()
+        for first, second in (
+            ("SAVEGAME/PC.DAT", r"savegame\\pc.dat"),
+            ("SAVEGAME", "SAVEGAME/PC.DAT"),
+        ):
+            with self.subTest(first=first, second=second), \
+                    tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                paths = []
+                for num, member in enumerate((first, second), 1):
+                    path = root / f"DATA{num}.ARJ"
+                    path.write_bytes(arj_volume(member, b"data"))
+                    paths.append(path)
+                out = root / "output"
+                result = subprocess.run(
+                    [str(exe), str(out), "hack", *map(str, paths)],
+                    capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertFalse(out.exists())
+
+    def test_reject_symlink_in_output_tree(self):
+        exe = self.decoder()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "DATA1.ARJ"
+            source.write_bytes(arj_volume("SAVEGAME/PC.DAT", b"unsafe"))
+            out = root / "output"
+            out.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            try:
+                (out / "SAVEGAME").symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("Creating directory symlinks is not permitted")
+            result = subprocess.run([str(exe), str(out), "hack", str(source)],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Unsafe ARJ output symlink", result.stderr)
+            self.assertFalse((outside / "PC.DAT").exists())
+
     def test_reject_path_traversal_before_writing(self):
         exe = self.decoder()
         with tempfile.TemporaryDirectory() as tmp:
