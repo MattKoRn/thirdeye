@@ -2,6 +2,7 @@
 #include "automap.hpp"
 #include "control.hpp"
 #include "nn/online_mode.hpp"
+#include "nn/advice_menu.hpp"
 #include "nn/rolling_save.hpp"
 #include "resources/res.hpp"
 #include "resources/gffi.hpp"
@@ -349,6 +350,8 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	if (recording)
 		++gRecorder.tick;
 
+	static int adviceHoverX = -1, adviceHoverY = -1;
+	static bool adviceConsumedLeftPress = false;
 	SDL_Event ev;
 	while (SDL_PollEvent(&ev)) {
 		// SDL3 dropped SDL2's automatic event-coordinate rescaling under
@@ -372,24 +375,31 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 					gfx.toggleFullscreen();
 				break;
 			}
-			// F1: hand movement control to the neural brain, or take it back.
-			// Never relay this host-side hotkey into the SOP virtual machine.
+			// F1 is now a clickable neural advice menu, not an AUTO takeover.
+			// It reads live EOB3 state; F1 again or Escape closes the overlay.
 			if (ev.key.scancode == SDL_SCANCODE_F1) {
 				if (!ev.key.repeat) {
-					const bool enabled = THIRDEYE::nn::mode::toggle();
-					static std::string normalTitle;
-					static bool gotTitle = false;
-					if (!gotTitle) {
-						normalTitle = SDL_GetWindowTitle(gfx.getWindow());
-						gotTitle = true;
-					}
-					const std::string title = normalTitle +
-					    (enabled ? " [Neural AUTO - F1 to stop]" : "");
-					SDL_SetWindowTitle(gfx.getWindow(), title.c_str());
-					std::cout << "[nn] Neural control " <<
-					    (enabled ? "ON" : "OFF") << " (F1)" << std::endl;
+					const bool opened = THIRDEYE::nn::mode::toggleAdviceMenu(
+					    objects, !THIRDEYE::runtime::gDungeonHack,
+					    THIRDEYE::runtime::uiScreenActive(objects));
+					std::cout << "[nn] F1 advice menu "
+					          << (opened ? "opened" : "closed/unavailable")
+					          << std::endl;
 				}
 				break;
+			}
+			if (THIRDEYE::nn::mode::adviceMenuOpen()) {
+				if (!ev.key.repeat && ev.key.key == SDLK_ESCAPE)
+					THIRDEYE::nn::mode::closeAdviceMenu();
+				else if (!ev.key.repeat &&
+				         ev.key.scancode >= SDL_SCANCODE_1 &&
+				         ev.key.scancode <= SDL_SCANCODE_5)
+					THIRDEYE::nn::mode::chooseAdvice(
+					    events, objects,
+					    static_cast<int>(ev.key.scancode - SDL_SCANCODE_1),
+					    !THIRDEYE::runtime::gDungeonHack,
+					    THIRDEYE::runtime::uiScreenActive(objects));
+				break; // no accidental game movement while the menu is up
 			}
 			// The SOP code expects DOS/BIOS key codes: printable keys are ASCII
 			// (SDL keysyms already are, incl. ESC=0x1b/Enter=0x0d), but the arrow
@@ -474,23 +484,46 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 			break;
 		}
 		case SDL_EVENT_MOUSE_MOTION: {
-			// F1 Neural AUTO owns the in-game pointer. The sole exception is
-			// an explicitly armed, bounded native food calibration: the user
-			// can supply one real click, which the VM then verifies.
-			if (THIRDEYE::nn::mode::ownsMouse() &&
-			    !THIRDEYE::nn::mode::acceptsCalibrationMouse())
-				break;
 			int lx, ly;
 			gfx.mouseToLogical(static_cast<int>(ev.motion.x),
 			                   static_cast<int>(ev.motion.y), lx, ly);
+			if (THIRDEYE::nn::mode::adviceMenuOpen()) {
+				adviceHoverX = lx;
+				adviceHoverY = ly;
+				break;
+			}
+			// Normal user mouse movement is never hijacked by neural AUTO.
 			events.mouseMove(lx, ly);
 			break;
 		}
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		case SDL_EVENT_MOUSE_BUTTON_UP: {
-			if (THIRDEYE::nn::mode::ownsMouse() &&
-			    !THIRDEYE::nn::mode::acceptsCalibrationMouse())
+			const bool buttonDown = ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+			if (adviceConsumedLeftPress &&
+			    ev.button.button == SDL_BUTTON_LEFT && !buttonDown) {
+				adviceConsumedLeftPress = false;
 				break;
+			}
+			if (THIRDEYE::nn::mode::adviceMenuOpen()) {
+				// Consume both halves of the UI click; never send either to
+				// the underlying EOB3 SOP game or inventory.
+				int lx = 0, ly = 0;
+				gfx.mouseToLogical(static_cast<int>(ev.button.x),
+				                   static_cast<int>(ev.button.y), lx, ly);
+				adviceHoverX = lx;
+				adviceHoverY = ly;
+				if (buttonDown && ev.button.button == SDL_BUTTON_LEFT) {
+					adviceConsumedLeftPress = true;
+					const int row = THIRDEYE::nn::advice::rowAt(
+					    lx, ly, THIRDEYE::nn::mode::adviceMenuCount());
+					if (row >= 0)
+						THIRDEYE::nn::mode::chooseAdvice(
+						    events, objects, row,
+						    !THIRDEYE::runtime::gDungeonHack,
+						    THIRDEYE::runtime::uiScreenActive(objects));
+				}
+				break;
+			}
 			// Drive click state from the event edge, not SDL_GetMouseState():
 			// EventSystem::mouseButton() only reacts to transitions, and a
 			// snapshot can miss a queued press/release pair when several
@@ -616,21 +649,6 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	    THIRDEYE::nn::rolling::partyState(objects) ==
 	        THIRDEYE::nn::rolling::Schedule::Party::Dead;
 	THIRDEYE::nn::mode::pump(events, objects, !gameplay || dead, eob3);
-	// Show the neural driver's gradual *game-window* cursor motion. SDL's
-	// inverse logical presentation transform handles letterbox/HiDPI/scale.
-	// Never warp the global pointer, and never move it if the game lost focus.
-	static uint64_t lastNeuralMouseMove = 0;
-	const uint64_t neuralMouseMove = THIRDEYE::nn::mode::mouseMoves();
-	if (THIRDEYE::nn::mode::ownsMouse() &&
-	    lastNeuralMouseMove != neuralMouseMove &&
-	    (SDL_GetWindowFlags(gfx.getWindow()) & SDL_WINDOW_INPUT_FOCUS)) {
-		float wx = 0.0f, wy = 0.0f;
-		if (SDL_RenderCoordinatesToWindow(
-		        gfx.getRenderer(), static_cast<float>(events.pointX()),
-		        static_cast<float>(events.pointY()), &wx, &wy))
-			SDL_WarpMouseInWindow(gfx.getWindow(), wx, wy);
-	}
-	lastNeuralMouseMove = neuralMouseMove;
 	if (ctx && eob3)
 		THIRDEYE::nn::rolling::tick(*ctx, THIRDEYE::nn::mode::active(),
 		                            gameplay && !dead);
@@ -772,6 +790,52 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 	sMapWasOpen = mapNowOpen;
 
 	gfx.update();                 // present whatever the bytecode has drawn
+	if (THIRDEYE::nn::mode::adviceMenuOpen()) {
+		// Transient SDL overlay: no SOP statics, palette, or game screens are
+		// modified. It remains clickable even under HiDPI logical scaling.
+		SDL_Renderer *renderer = gfx.getRenderer();
+		SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+		SDL_SetRenderDrawColor(renderer, 11, 15, 27, 244);
+		const SDL_FRect panel{9.0f, 17.0f, 302.0f, 178.0f};
+		SDL_RenderFillRect(renderer, &panel);
+		SDL_SetRenderDrawColor(renderer, 240, 246, 255, 255);
+		SDL_RenderDebugText(renderer, 21.0f, 25.0f, "NEURAL ADVICE / F1");
+		const std::string stats =
+		    "Batch " + std::to_string(THIRDEYE::nn::mode::adviceMenuGeneration()) +
+		    " | Learned " + std::to_string(THIRDEYE::nn::mode::samples());
+		SDL_RenderDebugText(renderer, 21.0f, 37.0f, stats.c_str());
+		const int count = THIRDEYE::nn::mode::adviceMenuCount();
+		const int hovered = THIRDEYE::nn::advice::rowAt(
+		    adviceHoverX, adviceHoverY, count);
+		for (int i = 0; i < count; ++i) {
+			const int y = THIRDEYE::nn::advice::kRowY +
+			              i * THIRDEYE::nn::advice::kRowHeight;
+			SDL_SetRenderDrawColor(renderer,
+			    i == hovered ? 50 : 28,
+			    i == hovered ? 81 : 43,
+			    i == hovered ? 120 : 65, 255);
+			const SDL_FRect button{
+			    static_cast<float>(THIRDEYE::nn::advice::kRowX),
+			    static_cast<float>(y),
+			    static_cast<float>(THIRDEYE::nn::advice::kRowWidth), 19.0f};
+			SDL_RenderFillRect(renderer, &button);
+			SDL_SetRenderDrawColor(renderer, 247, 250, 255, 255);
+			std::string label =
+			    std::to_string(i + 1) + ". " +
+			    THIRDEYE::nn::mode::adviceMenuLabel(i);
+			if (label.size() > 34) label.resize(34);
+			SDL_RenderDebugText(renderer, 28.0f,
+			                    static_cast<float>(y + 5), label.c_str());
+		}
+		SDL_SetRenderDrawColor(renderer, 165, 218, 187, 255);
+		std::string outcome = THIRDEYE::nn::mode::adviceLastResult();
+		if (outcome.size() > 34) outcome.resize(34);
+		SDL_RenderDebugText(renderer, 21.0f, 166.0f, outcome.c_str());
+		SDL_SetRenderDrawColor(renderer, 180, 186, 199, 255);
+		SDL_RenderDebugText(renderer, 21.0f, 181.0f,
+		                    "Click/1-5 to act | ESC/F1 close");
+		SDL_RenderPresent(renderer);
+	}
 	if (!events.peekEvent())
 		SDL_Delay(10);            // idle: yield instead of spinning
 }
