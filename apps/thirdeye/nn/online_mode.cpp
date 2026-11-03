@@ -2,6 +2,7 @@
 #include "combat_mode.hpp"
 #include "food_learning.hpp"
 #include "food_actuator.hpp"
+#include "human_mouse.hpp"
 #include "../runtime/internal.hpp"
 #include "online_policy.hpp"
 #include "spell_probe.hpp"
@@ -49,7 +50,13 @@ struct State {
     bool foodActuatorDirty = false;
     bool foodActuatorPresent = false;
     bool foodActuatorWarned = false;
-    bool foodClickDown = false;
+    mouse::HumanMouse humanMouse;
+    std::optional<food::CalibratedClick> mouseTarget;
+    bool mouseReleasePending = false;
+    uint64_t mouseMoves = 0;
+    uint64_t mouseClicks = 0;
+    uint64_t mouseAborts = 0;
+    bool mouseAutoFood = true;
     std::filesystem::path foodFile;
     bool foodStorageReady = false;
     bool foodDirty = false;
@@ -514,6 +521,73 @@ void observeFoodTrial(VM::ObjectSystem &objects, VM::EventSystem &events) {
     }
 }
 
+
+void abortMouse(bool count) {
+    if (g.humanMouse.busy()) {
+        g.mouseReleasePending |= g.humanMouse.cancel();
+        if (count) ++g.mouseAborts;
+    }
+    g.mouseTarget.reset();
+}
+
+bool tickHumanMouse(VM::EventSystem &events, VM::ObjectSystem &objects,
+                    bool eob3) {
+    if (g.mouseReleasePending) {
+        events.mouseButton(false, false);
+        g.mouseReleasePending = false;
+    }
+    if (!g.humanMouse.busy()) return false;
+    const auto *target = g.mouseTarget ? &*g.mouseTarget : nullptr;
+    const int cursor = readWord(objects, objects.firstObjectOfClass(kKernelClass),
+                                kKernelClass, 241);
+    const bool safe = g.autonomous && eob3 && g.foodTrial &&
+        g.foodTrial->automatic && target && target->valid() &&
+        target->slot == g.foodTrial->slot &&
+        target->click.handlerObject == g.foodTrial->before.pc &&
+        g.foodTrial->before.item == cursor &&
+        spellScreen(objects) == target->screen &&
+        runtime::uiScreenActive(objects) &&
+        events.matchesLeftClickTarget(target->click);
+    if (!safe) {
+        abortMouse(true);
+        if (g.mouseReleasePending) {
+            events.mouseButton(false, false);
+            g.mouseReleasePending = false;
+        }
+        if (g.foodTrial && g.foodTrial->automatic) {
+            g.failedFoodRegions.insert(food::ActuatorMemory::key(
+                g.foodTrial->slot, g.foodTrial->before.itemClass,
+                target ? target->screen : -1));
+            g.foodTrial.reset();
+            g.foodStatus = "mouse-target-changed";
+        }
+        std::cout << "[nn] mouse aborted: live UI target changed"
+                  << " unsafe_clicks=0 aborts=" << g.mouseAborts << '\n';
+        return false;
+    }
+    const auto step = g.humanMouse.advance(mouse::HumanMouse::Clock::now());
+    switch (step.kind) {
+    case mouse::HumanMouse::Kind::Move:
+        events.mouseMove(step.x, step.y);
+        ++g.mouseMoves;
+        break;
+    case mouse::HumanMouse::Kind::Press:
+        events.mouseMove(step.x, step.y);
+        events.mouseButton(true, false);
+        ++g.mouseClicks;
+        std::cout << "[nn] mouse native click target=food slot="
+                  << target->slot << " x=" << step.x << " y=" << step.y
+                  << " steps=" << g.mouseMoves << '\n';
+        break;
+    case mouse::HumanMouse::Kind::Release:
+        events.mouseButton(false, false);
+        g.mouseTarget.reset();
+        break;
+    case mouse::HumanMouse::Kind::Idle: break;
+    }
+    return true;
+}
+
 bool canMove(int action, const std::array<bool, 4> &blocked) {
     switch (action) {
     case 0: return !blocked[0]; // forward
@@ -649,6 +723,7 @@ void shutdown() {
     flushLearning();
     combat::shutdown();
     g.autonomous = false;
+    abortMouse(false);
     g.pending.reset();
     g.retreatPending.reset();
     g.foodTrial.reset();
@@ -660,10 +735,19 @@ std::filesystem::path checkpointPath() {
 }
 
 bool active() { return g.autonomous; }
+bool ownsMouse() { return g.autonomous; }
+uint64_t mouseMoves() { return g.mouseMoves; }
+uint64_t mouseClicks() { return g.mouseClicks; }
+uint64_t mouseAborts() { return g.mouseAborts; }
+const char *mouseState() {
+    return g.humanMouse.busy() ? "moving-or-clicking" : "idle";
+}
+
 
 void setActive(bool enabled) {
     initialize();
     g.autonomous = enabled;
+    abortMouse(false);
     combat::cancel();
     g.pacer.reset(ActionPacer::Clock::now());
     g.pending.reset();
@@ -867,10 +951,16 @@ bool useCalibratedFood(VM::ObjectSystem &objects, VM::EventSystem &events,
     if (!queueFoodProbe(objects, events, slot, error)) return false;
     g.foodTrial->automatic = true;
     g.foodStatus = "executing";
-    events.mouseMove(profile->click.x, profile->click.y);
-    events.mouseButton(true, false); // exact native region; no direct SOP send
-    g.foodClickDown = true;         // release on next host pump
-    std::cout << "[nn] automated native food region click"
+    if (!g.humanMouse.start(events.pointX(), events.pointY(),
+            profile->click.x, profile->click.y,
+            mouse::HumanMouse::Clock::now(), g.rng())) {
+        g.foodTrial.reset();
+        g.foodStatus = "mouse-unavailable";
+        error = "game mouse driver could not start safely";
+        return false;
+    }
+    g.mouseTarget = *profile;
+    std::cout << "[nn] automated native food mouse traversal"
               << " slot=" << slot << " class=" << before.itemClass
               << " target=" << before.pc
               << " pos=(" << profile->click.x << ',' << profile->click.y << ")"
@@ -937,10 +1027,7 @@ bool predict(VM::ObjectSystem &objects, int &key, double &confidence) {
 void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
           bool uiActive, bool eob3) {
     combat::release(events); // always release pending click on next host pump
-    if (g.foodClickDown) {
-        events.mouseButton(false, false);
-        g.foodClickDown = false;
-    }
+    tickHumanMouse(events, objects, eob3); // one small cursor step per host pump
     // Native feeding is confirmed by the SOP after the player/control socket
     // operates its already-verified food plate. Observe even in equipment UI.
     observeFoodTrial(objects, events);
