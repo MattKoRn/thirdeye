@@ -577,6 +577,20 @@ bool regenerateAdvice(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
     return true;
 }
 
+// Always return to the F1 panel once an action has resolved, including
+// timeouts or a changed game scene. If gameplay cannot be observed yet,
+// render a safe empty panel with a reason rather than making up actions.
+void finishAdviceBatch(VM::ObjectSystem &objects, bool eob3, bool uiActive) {
+    if (!g.adviceReopen) return;
+    g.adviceReopen = false;
+    if (regenerateAdvice(objects, eob3, uiActive)) return;
+    g.adviceBatch = {};
+    g.adviceOpen = true;
+    g.adviceResult += " (F1 closes to return to the game)";
+    std::cout << "[nn] advice returned with no safe actions; "
+                 "close F1 and resume gameplay to regenerate\n";
+}
+
 void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
                    bool eob3, bool uiActive) {
     if (!g.advicePending) return;
@@ -592,9 +606,9 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
         // action or letting it execute much later behind the next menu.
         events.flushEventQueue(0, VM::SYS_KEYDOWN, key);
         g.advicePending.reset();
-        g.adviceReopen = false;
         g.adviceResult = "Advice timed out before execution; no learning.";
         std::cout << "[nn] advice timeout awaiting native key trained=no\n";
+        finishAdviceBatch(objects, eob3, uiActive);
         return;
     }
     if (now - trial.sent < std::chrono::milliseconds(200) || queued) return;
@@ -647,12 +661,7 @@ void observeAdvice(VM::EventSystem &events, VM::ObjectSystem &objects,
         std::cout << "[nn] advice outcome unverified (screen/pose changed)"
                   << " trained=no\n";
     }
-    if (g.adviceReopen && !uiActive) {
-        if (regenerateAdvice(objects, eob3, uiActive))
-            g.adviceReopen = false;
-        // On a scene transition keep the request until the next playable
-        // game view; never force an input into a character sheet or cutscene.
-    }
+    finishAdviceBatch(objects, eob3, uiActive);
 }
 
 bool canMove(int action, const std::array<bool, 4> &blocked) {
@@ -1152,9 +1161,9 @@ void pump(VM::EventSystem &events, VM::ObjectSystem &objects,
     }
     // Observe first: a consumed item must not invalidate its own mouse release.
     observeFoodTrial(objects, events);
-    if (g.adviceOpen && (!eob3 || uiActive)) {
-        g.adviceResult = "Gameplay screen changed; advice menu closed.";
-        closeAdviceMenu();
+    if (g.adviceOpen && uiActive && g.adviceBatch.count > 0) {
+        g.adviceResult = "Underlying game screen changed; no safe advice.";
+        g.adviceBatch = {}; // stay in F1 panel, but never act on stale advice
     }
     if (g.advicePending) {
         observeAdvice(events, objects, eob3, uiActive);
