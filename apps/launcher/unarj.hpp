@@ -5,7 +5,7 @@
 #include <vector>
 
 struct ArjEntry {
-    std::string name;           // stored filename (no path in EOB3's sets)
+    std::string name;           // archive member path (HACK may include SAVEGAME/)
     int volume = 0;             // 0-based index of the volume it starts in
     std::vector<uint8_t> data;
 };
