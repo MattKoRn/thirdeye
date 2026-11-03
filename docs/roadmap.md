@@ -886,9 +886,10 @@ need verification against the original `AESOP.EXE`/`INTERP.EXE` behaviour or the
   blocking train the single shared `brain-shared.ckpt` policy; unexpected
   displacement, turns or floor changes are unverified and do not train.
   Exploration memory records newly reached cells only after confirmation.
-- The existing F1 modal pause, player-clickable rows, and return-to-F1 feedback
-  cycle are retained. Multi-step navigation and verified interaction actuators
-  remain future work.
+- The manual advice modal pause, player-clickable rows, and return-to-menu
+  feedback cycle remain available through the control socket. F1 itself now
+  toggles invisible two-second auto-selection of the same tested objectives.
+  Multi-step navigation and verified interaction actuators remain future work.
 - **F1 stability / cross-game persistence (2026-11-03):** Compose the frozen
   game frame with the F1 panel before SDL's first present, and repaint in the
   modal pause only when a hover row or window surface changes. No 16 ms
