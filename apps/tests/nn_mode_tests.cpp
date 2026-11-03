@@ -5,6 +5,7 @@
 #include "../thirdeye/nn/food_learning.hpp"
 #include "../thirdeye/nn/food_actuator.hpp"
 #include "../thirdeye/nn/advice_menu.hpp"
+#include "../thirdeye/game_boot.hpp"
 #include "../thirdeye/nn/dungeon_hack_context.hpp"
 #include "../thirdeye/nn/rolling_save.hpp"
 #include "../thirdeye/nn/online_policy.hpp"
@@ -161,6 +162,74 @@ TEST(nnDungeonHack, BothGamesUseSamePersistentBrainWithoutTouchingLegacyFiles) {
               documents / "ThirdeyeNN" / "brain-dungeon-hack.ckpt");
     EXPECT_NE(mode::legacyBrainFileForDocuments(documents, false), eob);
     EXPECT_NE(mode::legacyBrainFileForDocuments(documents, true), eob);
+}
+
+TEST(nnAutoAdvice, TwoSecondDeadlinesDoNotBurstAfterStalls) {
+    using THIRDEYE::nn::advice::AutoChoicePacer;
+    using Clock = AutoChoicePacer::Clock;
+    AutoChoicePacer pacer;
+    const auto t0 = Clock::time_point{};
+    pacer.reset(t0);
+    EXPECT_FALSE(pacer.ready(t0));
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::milliseconds(1999)));
+    EXPECT_TRUE(pacer.ready(t0 + std::chrono::seconds(2)));
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::seconds(2)));
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::milliseconds(3999)));
+    EXPECT_TRUE(pacer.ready(t0 + std::chrono::seconds(4)));
+    pacer.reset(t0 + std::chrono::seconds(7)); // toggle F1 on again
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::seconds(8)));
+    EXPECT_TRUE(pacer.ready(t0 + std::chrono::seconds(9)));
+
+    pacer.reset(t0);
+    EXPECT_TRUE(pacer.ready(t0 + std::chrono::minutes(5)));
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::minutes(5)));
+    EXPECT_FALSE(pacer.ready(t0 + std::chrono::minutes(5) +
+                             std::chrono::milliseconds(1999)));
+    EXPECT_TRUE(pacer.ready(t0 + std::chrono::minutes(5) +
+                            std::chrono::seconds(2)));
+}
+
+TEST(nnDungeonHack, StandardLaunchRoutesToNativePhaseOneWithoutIntroGff) {
+    namespace boot = THIRDEYE::boot;
+    const std::filesystem::path hack("C:/Games/Dungeon Hack/HACK.RES");
+    const std::filesystem::path eob("C:/Games/Eye of the Beholder III/EYE.RES");
+    EXPECT_TRUE(boot::isDungeonHackResource(hack));
+    EXPECT_FALSE(boot::needsExternalIntro(hack));
+    EXPECT_EQ(boot::initialObject(hack), "phase-one");
+    EXPECT_EQ(boot::initialObject("c:/game/hack.res"), "phase-one");
+    EXPECT_EQ(boot::initialObject("C:/game/OPEN.RES"), "opening");
+    EXPECT_TRUE(boot::isDungeonHackResource("C:/game/OPEN.RES"));
+    EXPECT_FALSE(boot::isDungeonHackResource(eob));
+    EXPECT_TRUE(boot::needsExternalIntro(eob));
+    EXPECT_EQ(boot::initialObject(eob), "start");
+    EXPECT_EQ(boot::initialObject("C:/game/SAMPLE.RES"), "start");
+}
+
+TEST(nnAutoAdvice, PlannerChoosesObservableActionAndLearnsAfterVerification) {
+    namespace advice = THIRDEYE::nn::advice;
+    THIRDEYE::nn::OnlinePolicy brain;
+    const mode::Pose start{8, 8, 0, 1};
+    const auto features = THIRDEYE::nn::OnlinePolicy::features(
+        start.x, start.y, start.facing, {false, true, true, true});
+    const std::array<bool, 6> allowed{true, false, false, false, false, false};
+    const std::array<bool, 6> frontier{true, false, false, false, false, false};
+    const auto batch = advice::generate(brain, features, allowed, frontier,
+                                        start, 1);
+    ASSERT_EQ(batch.count, 1);
+    ASSERT_EQ(batch.suggestions[0].action, 0);
+    const auto target = batch.suggestions[0].target;
+    ASSERT_EQ(target, (mode::Pose{8, 7, 0, 1}));
+    const auto verified = advice::objectiveOutcome(
+        batch.suggestions[0].action, start, target, target, true);
+    ASSERT_TRUE(verified);
+    EXPECT_TRUE(verified->success);
+    ASSERT_TRUE(brain.reinforce(features, 0, verified->reward,
+                                verified->success));
+    EXPECT_EQ(brain.samples(), 1u);
+    EXPECT_EQ(brain.successes(), 1u);
+    EXPECT_FALSE(advice::objectiveOutcome(0, start, target,
+                                          {19, 22, 0, 1}, false));
+    EXPECT_EQ(brain.samples(), 1u); // unverified outcomes never train
 }
 
 TEST(nnAdvice, HoverRepaintsOnlyOnChoiceChanges) {
