@@ -424,6 +424,48 @@ M:54 `sp` dispatch mapping still require verified event/bytecode tracing.
 A menu-open/close probe is not an autonomous spell cast; the neural agent
 does not use unverified input mappings or train on these observations.
 
+**Native food-use verification and learned recovery preferences (EOB3 only).**
+The game's own food interaction is supported: holding rations in the cursor,
+opening the equipment view, and clicking the native food plate consumes the
+item and raises the character's food value when hungry (see
+`docs/roadmap.md`, Consumables). The food-plate coordinates and potion
+subtype semantics are **not** verified in the neural controller. This
+iteration therefore adds a *bounded, opt-in instrumented native experiment*,
+rather than inventing a click or a healing effect.
+
+With `nn auto on` and `nn train on`, first pick up a documented food
+item into the game's native in-hand cursor. While the intended character is
+hungry, run `nn food probe <party-slot-0..5>`. The controller records the
+actual EOB3 food item class (rations 1347, apple 1451, iron rations 1456),
+the cursor item, party identity, level, HP and food counters, and suspends
+other autonomous movement/combat while the probe is armed. Use the existing
+native food-plate action to consume the item within 30 seconds.
+**Only** when the same PC remains present, food actually increases and
+the game empties the item cursor is it counted as a verified consumption.
+A dropped/equipped item, full stomach, unchanged food, invalid or replaced
+party, level transition, unsupported item class or timeout produces
+`unverified` and **no training reward**.
+
+The recovery model learns a bounded reward proportional to the observed
+food increase, keyed by the known **food item class** and the target
+character's food/HP and resource context. Observed HP change is reported
+separately and is **not** attributed as potion healing. The existing online
+model's checksum-checked v2 format persists this separate food policy as
+`Documents/ThirdeyeNN/food.ckpt`, autosaved every eight confirmed
+observations, on clean exit, and before rolling-game-save recovery.
+Existing `brain.ckpt`, `survival.ckpt`, `combat.ckpt`,
+`weaknesses.ckpt` and native `nn-1`.. `nn-3` game saves remain
+unchanged. Corrupt existing `food.ckpt` files are preserved, not replaced.
+
+`nn food status` reports the trial's state; `nn status` adds
+`food_samples`, `food_reward`, `food_checkpoint` and `food_probe`.
+After it has learned confirmed outcomes, `nn food recommend <slot>`
+uses the saved recovery policy to choose among food item classes actually
+carried by the party. **Recommendations are diagnostic only** until the
+native food-plate hit region and item-to-cursor transfer are independently
+verified for autonomous execution. No arbitrary potion, healing spell,
+equipment coordinate or rest command is issued.
+
 **Survival retreat and resource-aware learning (EOB3 only).**
 When autonomy is enabled, the controller reads each party member's native
 PC HP/max HP (class 1369 offsets 171/173), food (177), and distinct inventory
@@ -495,6 +537,7 @@ available to the debug control socket. Commands:
 outcome learning*, not player observation), `nn auto on/off`,
 `nn predict`, `nn step`, `nn spell status <slot>`,
 `nn spell probe <slot> <mage|cleric>`,
+`nn food probe <slot>`, `nn food status`, `nn food recommend <slot>`,
 `nn save <path>`, and `nn load <path>`.
 `nn teach` is disabled; player demonstrations never train
 the model. Manual checkpoint commands do not change the automatic
