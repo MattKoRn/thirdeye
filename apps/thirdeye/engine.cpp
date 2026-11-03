@@ -386,6 +386,7 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 					const bool opened = THIRDEYE::nn::mode::toggleAdviceMenu(
 					    objects, !THIRDEYE::runtime::gDungeonHack,
 					    THIRDEYE::runtime::uiScreenActive(objects));
+					if (opened) adviceHoverX = adviceHoverY = -1;
 					std::cout << "[nn] F1 advice menu "
 					          << (opened ? "opened" : "closed/unavailable")
 					          << std::endl;
