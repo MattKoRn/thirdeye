@@ -424,6 +424,51 @@ M:54 `sp` dispatch mapping still require verified event/bytecode tracing.
 A menu-open/close probe is not an autonomous spell cast; the neural agent
 does not use unverified input mappings or train on these observations.
 
+**Native food-region calibration and guarded automatic use (EOB3 only).**
+The neural agent now records the exact **registered SOP mouse-region
+listener** responsible for a successful native food-use experiment. The
+VM event layer captures real left-click coordinates, the live window's
+rectangle, its event type, handler class/message, and handler object. The
+capture rejects ambiguous smallest regions, full-screen regions and
+unregistered clicks; a manual trial must contain exactly one observed
+registered click, while the native UI is up, followed by both the
+`W:in_hand` item disappearing and the targeted PC's food counter increasing.
+No reward or actuator calibration comes from a click without that evidence.
+
+To calibrate: turn neural autonomy/training on, hold a documented food item
+in the native cursor, **open the intended character's equipment/food UI**,
+run `nn food probe <slot>`, and click the food plate **once**. On verified
+consumption, the agent records the observed region for that party slot,
+food item class and `W:current_screen`. An observed handler belonging to a
+different object is kept as diagnostic evidence only, not granted replay
+privileges. Calibrations persist in a separate
+`Documents/ThirdeyeNN/food_actuator.ckpt` file with version-1 header,
+checksum, strict region validation, bounded entries, atomic replacement and
+validate-before-commit load. A damaged file is preserved and automation
+disabled until repaired; older neural checkpoints remain compatible.
+
+With another recognized food item *already held*, open the intended
+character's equipment/food screen and issue `nn food use <slot>`.
+Only if a saved calibration matches the exact current party slot, item
+class, screen, original PC object, **PC-class SOP region handler**,
+handler message and window rectangle does the neural controller issue one
+native left-click at the previously observed position. It releases the
+button on the next host pump and independently verifies the actual food
+increase and consumed item. It suppresses further automatic attempts at
+that region after an ambiguous click, drop, timeout or unchanged food
+until a new manual calibration. No hardcoded food-plate coordinates,
+synthetic SOP use messages, arbitrary potions, unproven healing spells or
+equipment manipulation are introduced.
+
+`nn status` and `nn food status` include `food_calibrations`/calibration
+counts. The existing food model continues saving `food.ckpt`; the
+actuator file contains only verified region fingerprints, not new weight
+formats. Both are flushed before neural game-over restore, while the
+existing rolling native saves `nn-1`, `nn-2`, `nn-3` and five-second
+recovery remain unchanged. **This is bounded automatic food-plate use after
+manual item-to-cursor/equipment setup**, not yet autonomous retrieval from
+backpacks or unattended healing.
+
 **Native food-use verification and learned recovery preferences (EOB3 only).**
 The game's own food interaction is supported: holding rations in the cursor,
 opening the equipment view, and clicking the native food plate consumes the
@@ -537,7 +582,8 @@ available to the debug control socket. Commands:
 outcome learning*, not player observation), `nn auto on/off`,
 `nn predict`, `nn step`, `nn spell status <slot>`,
 `nn spell probe <slot> <mage|cleric>`,
-`nn food probe <slot>`, `nn food status`, `nn food recommend <slot>`,
+`nn food probe <slot>`, `nn food use <slot>`, `nn food status`,
+`nn food recommend <slot>`,
 `nn save <path>`, and `nn load <path>`.
 `nn teach` is disabled; player demonstrations never train
 the model. Manual checkpoint commands do not change the automatic
