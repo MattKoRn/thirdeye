@@ -474,6 +474,12 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 			break;
 		}
 		case SDL_EVENT_MOUSE_MOTION: {
+			// F1 Neural AUTO owns the in-game pointer. The sole exception is
+			// an explicitly armed, bounded native food calibration: the user
+			// can supply one real click, which the VM then verifies.
+			if (THIRDEYE::nn::mode::ownsMouse() &&
+			    !THIRDEYE::nn::mode::acceptsCalibrationMouse())
+				break;
 			int lx, ly;
 			gfx.mouseToLogical(static_cast<int>(ev.motion.x),
 			                   static_cast<int>(ev.motion.y), lx, ly);
@@ -482,6 +488,9 @@ void THIRDEYE::runtime::pumpHost(GRAPHICS::Graphics &gfx, VM::EventSystem &event
 		}
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		case SDL_EVENT_MOUSE_BUTTON_UP: {
+			if (THIRDEYE::nn::mode::ownsMouse() &&
+			    !THIRDEYE::nn::mode::acceptsCalibrationMouse())
+				break;
 			// Drive click state from the event edge, not SDL_GetMouseState():
 			// EventSystem::mouseButton() only reacts to transitions, and a
 			// snapshot can miss a queued press/release pair when several
