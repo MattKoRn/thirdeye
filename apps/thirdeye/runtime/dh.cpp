@@ -39,6 +39,11 @@ int gObservedMapLevel = -1;
 
 NeuralSnapshot neuralSnapshot() { return gNeuralSnapshot; }
 
+void invalidateNeuralSnapshot() {
+    gNeuralSnapshot.valid = false;
+    gObservedMapLevel = -1; // require the next native map + draw before F1 acts
+}
+
 namespace {
 
 // Case-insensitive child resolve (dup of engine.cpp's helper; keeping dh.cpp
