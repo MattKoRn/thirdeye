@@ -418,7 +418,7 @@ While explicit `nn auto on` autonomy is active, the controller also reports obse
 in real spell counters/effects as `[nn] spell-state`, clearly marked
 `attributed_cast=no trained=no`. This adds live discovery telemetry
 without pretending that a resource change proves an enemy weakness.
-Neither `brain.ckpt`, `combat.ckpt`, `weaknesses.ckpt`, nor game-save
+Neither `brain-shared.ckpt`, `combat.ckpt`, `weaknesses.ckpt`, nor game-save
 formats are altered; `nn-1`/`nn-2`/`nn-3` recovery is unchanged.
 
 **Remaining limitation:** Spellbook/holy-symbol spell selection and the
@@ -432,12 +432,15 @@ open an in-game overlay of at most **five clickable suggestions**. The
 host then stays inside a modal SDL event loop: only F1, Escape, numbered
 choices, mouse hover/click, display/fullscreen changes and window-close are
 accepted. **The SOP VM does not dispatch any game events while this panel
-is open.** The renderer redraws its last cached game frame without advancing
+is open.** The renderer presents the cached game frame and F1 overlay together
+(no intermediate bare-game present), then repaints only when the hovered choice
+or window surface changes. It never redraws merely because a paused wait timed
+out. The renderer keeps its last cached game frame without advancing
 cinematics, fades or graphics animations; only the advice highlight changes.
 The heartbeat also subtracts the exact paused wall-clock duration to prevent
 monsters, timers and spells from catching up after the pause ends. F1 / Escape exits the pause without taking an action. Each recommendation is a real supported movement
 action (forward, back, strafe left/right, turn left/right), ranked using the
-currently saved `brain.ckpt` neural weights, accessible paths, nearby walls,
+currently saved shared `brain-shared.ckpt` neural weights, accessible paths, nearby walls,
 and exploration of unvisited cells. The display is ranked and bounded even
 when all six movement actions are legal; inaccessible actions are excluded.
 The advice comes from the game's trained neural policy, not a language-model
@@ -445,16 +448,18 @@ API and not random prose. For **Dungeon Hack**, the existing native
 `draw_walls(x,y,facing,...,lvlmap,...)` call publishes a validated, live
 32×32 maze and party pose. The same movement actions, rankings, outcome
 feedback and five-choice menu apply without reading EOB3-only SOP class
-statics. Dungeon Hack learns into a distinct checksum-protected
-`Documents/ThirdeyeNN/brain-dungeon-hack.ckpt`; EOB3 keeps its unchanged
-`brain.ckpt`.
+statics. Both games learn into the SAME checksum-protected
+`Documents/ThirdeyeNN/brain-shared.ckpt`. On first use, existing
+`brain.ckpt` (EOB3) and `brain-dungeon-hack.ckpt` (Dungeon Hack)
+are merged by learned-sample count into the shared file; both originals
+remain untouched. The shared checkpoint is reused on later boots.
 
 Click a numbered row or press **1–5** to execute exactly one recommended
 game action. The overlay closes for that action. After the game's SOP engine
 has consumed the native movement key and the next state can be observed,
 the controller compares the actual position/direction and computes the
 existing neural exploration reward. Confirmed success or failure updates
-`brain.ckpt` using the same online reinforcement logic as the original
+`brain-shared.ckpt` using the same online reinforcement logic as the original
 autonomous mode. Invalid teleport, level transition or UI interruption
 does **not** train the policy. It then **always returns to the F1 advice panel** with a fresh batch
 of up to five suggestions, including the latest learning count and result.
@@ -481,7 +486,7 @@ For control clients, use `nn advice open`, `nn advice list`,
 `nn advice choose 1` through `nn advice choose 5`,
 `nn advice close` and `nn advice status`. The normal `nn status`
 reports `advice_open`, `advice_generation`, and `advice_choices`.
-The policy checkpoint schema, survival/combat/food/tactics files, and
+The policy checkpoint schema, shared brain storage, survival/combat/food/tactics files, and
 one-minute rotating EOB3 `nn-1`/`nn-2`/`nn-3` native saves with
 five-second game-over recovery are unchanged. **Dungeon Hack's
 native save/restore, monster HP, attack hit regions, food and spell
@@ -627,11 +632,17 @@ in Dungeon Hack until its character offsets and button coordinates have
 been verified. It does not auto-consume items or cast healing spells; see the separate survival retreat behaviour above.
 
 The neural movement brain automatically loads from the operating system's
-resolved Documents folder, at `Documents/ThirdeyeNN/brain.ckpt`.
+resolved Documents folder, at `Documents/ThirdeyeNN/brain-shared.ckpt`.
+Both Dungeon Hack and EOB3 use that exact path regardless of their game-data
+folder. Starting a new game clears temporary route/failed-action state, but
+preserves the trained model, sample count and outcome statistics. If the shared
+file does not exist yet, existing per-game `brain.ckpt` and
+`brain-dungeon-hack.ckpt` files are imported once and left unchanged.
 Combat learning independently loads/saves
 `Documents/ThirdeyeNN/combat.ckpt`. Both use the existing
-checksum-protected `THIRDEYE_NN 2` format: no migration or change to
-prior movement checkpoints is required. Combat autosaves every 16 learned
+checksum-protected `THIRDEYE_NN 2` format: no format change to
+prior movement checkpoints is required; the first shared-brain boot
+performs a non-destructive, sample-weighted migration of legacy models. Combat autosaves every 16 learned
 outcomes and on shutdown. `nn status` reports `combat_samples`,
 `combat_reward`, `combat_success`, and `combat_checkpoint`.
 The directory is created as needed. It saves **silently** after 32
@@ -641,7 +652,8 @@ validation. Version 2 saves self-learning outcomes and model weights.
 Older version-1 checkpoints remain loadable; their weights are used as
 an initial policy, but from then onward **only the agent's own measured
 results update the model**. To begin from an untrained policy instead,
-back up or remove the old brain file.
+back up or remove the shared checkpoint AND both old game-specific
+checkpoint files so migration does not immediately restore their weights.
 
 When `THIRDEYE_CTL` is enabled on POSIX, the same model is
 available to the debug control socket. Commands:
@@ -658,6 +670,7 @@ Documents brain path. The live learning loop works without a control
 socket on Windows, Linux, and macOS.
 
 Neural unit tests cover outcome scoring, exploration, reward learning,
-checkpoint safety, and version-1 migration in
+shared EOB3/Dungeon Hack brain migration, failed-load safety, F1 hover repaint
+invalidation, and version-1 compatibility in
 `apps/tests/nn_mode_tests.cpp` and
 `apps/tests/nn_checkpoint_tests.cpp`.
